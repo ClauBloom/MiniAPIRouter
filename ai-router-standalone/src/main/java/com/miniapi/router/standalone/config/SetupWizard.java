@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +19,7 @@ public class SetupWizard {
     }
 
     private static final Path SETUP_FILE = getBaseDir().resolve(".setup-wizard.json");
+    private static final Path CRYPTO_SECRET_FILE = getBaseDir().resolve("crypto.secret");
     private static final Path DB_FILE = getBaseDir().resolve("miniapi.db");
 
     private static final Map<String, String> PROVIDER_DEFAULTS = Map.of(
@@ -57,6 +60,32 @@ public class SetupWizard {
         }
     }
 
+    public static String loadCryptoSecret() {
+        try {
+            if (Files.exists(CRYPTO_SECRET_FILE)) {
+                return Files.readString(CRYPTO_SECRET_FILE).trim();
+            }
+        } catch (IOException e) {
+            System.err.println("  ⚠ 无法读取加密密钥文件: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private static String generateCryptoSecret() {
+        byte[] key = new byte[32];
+        new SecureRandom().nextBytes(key);
+        return Base64.getEncoder().encodeToString(key);
+    }
+
+    private static void saveCryptoSecret(String secret) {
+        try {
+            Files.createDirectories(CRYPTO_SECRET_FILE.getParent());
+            Files.writeString(CRYPTO_SECRET_FILE, secret);
+        } catch (IOException e) {
+            System.err.println("  ⚠ 无法保存加密密钥: " + e.getMessage());
+        }
+    }
+
     private final Scanner scanner = new Scanner(System.in);
 
     public void run() {
@@ -72,6 +101,7 @@ public class SetupWizard {
         List<String> models = askModels(provider);
         int port = askPort();
         String authToken = askAuthToken();
+        String cryptoSecret = askCryptoSecret();
 
         System.out.println();
         System.out.println("  ┌──────────────────────────────────────────┐");
@@ -94,9 +124,11 @@ public class SetupWizard {
         }
 
         saveSetupData(provider, apiKey, baseUrl, models, port, authToken);
+        saveCryptoSecret(cryptoSecret);
 
         System.setProperty("server.port", String.valueOf(port));
         System.setProperty("miniapi.router.auth-token", authToken);
+        System.setProperty("miniapi.router.crypto-secret", cryptoSecret);
 
         System.out.println("  ✓ 配置已保存，正在启动服务...");
         System.out.println();
@@ -199,6 +231,15 @@ public class SetupWizard {
         System.out.print("  认证 Token (回车使用 sk-miniapi-standalone): ");
         String input = scanner.nextLine().trim();
         return input.isEmpty() ? "sk-miniapi-standalone" : input;
+    }
+
+    private String askCryptoSecret() {
+        System.out.println();
+        System.out.println("  ── 额外: API Key 加密密钥 ──");
+        String generated = generateCryptoSecret();
+        System.out.print("  加密密钥 (回车自动生成 32 字节 Base64 密钥): ");
+        String input = scanner.nextLine().trim();
+        return input.isEmpty() ? generated : input;
     }
 
     private boolean confirm() {
