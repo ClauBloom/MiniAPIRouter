@@ -1,6 +1,8 @@
 package com.miniapi.router.core.intent;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.miniapi.router.core.domain.ApiKeyConfig;
 import com.miniapi.router.core.domain.IntentConfig;
 import com.miniapi.router.core.spi.IntentCatalogProvider;
@@ -11,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,14 +25,10 @@ public class IntentEvaluator {
     private static final int INTENT_TIMEOUT_MS = 5000;
     private static final int INTENT_MAX_TOKENS = 3000;
 
-    private final Map<String, CacheEntry> intentCache = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final long CACHE_TTL_MS = 5_000;
-
-    private static class CacheEntry {
-        final IntentResult result;
-        final long timestamp;
-        CacheEntry(IntentResult r) { this.result = r; this.timestamp = System.currentTimeMillis(); }
-    }
+    private final Cache<String, IntentResult> intentCache = Caffeine.newBuilder()
+            .expireAfterWrite(5, TimeUnit.SECONDS)
+            .maximumSize(10_000)
+            .build();
 
     private final UpstreamStreamClient upstreamClient;
     private final PromptTemplate promptTemplate;
@@ -61,10 +60,10 @@ public class IntentEvaluator {
 
         List<IntentConfig> catalog = catalogProvider.findAll(tenantId);
 
-        CacheEntry cached = intentCache.get(userQuestion);
-        if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MS) {
+        IntentResult cached = intentCache.getIfPresent(userQuestion);
+        if (cached != null) {
             log.info("[IntentEval] Cache hit for '{}', skipping eval", userQuestion.substring(0, Math.min(40, userQuestion.length())));
-            return cached.result;
+            return cached;
         }
 
         String systemPrompt = promptTemplate.buildSystemPrompt(catalog);
@@ -84,7 +83,7 @@ public class IntentEvaluator {
             if (result == null) return null;
 
             if (result.getIntent() != null) {
-                intentCache.put(userQuestion, new CacheEntry(result));
+                intentCache.put(userQuestion, result);
             }
 
             if (SPECIAL_INTENTS.contains(result.getIntent())) {
