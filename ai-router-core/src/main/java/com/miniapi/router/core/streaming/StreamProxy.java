@@ -51,6 +51,7 @@ public class StreamProxy {
         Exception lastError = null;
         for (int i = 0; i < chain.size(); i++) {
             ApiKeyConfig key = chain.get(i);
+            upstreamBody.put("model", resolveEffectiveModel(key, defaultModel));
             try {
                 UpstreamStreamClient.NonStreamResult result = upstreamClient.callUpstream(key, upstreamPath, upstreamBody);
                 if (result.statusCode() >= 400) {
@@ -166,6 +167,7 @@ public class StreamProxy {
 
         for (int i = 0; i < chain.size(); i++) {
             ApiKeyConfig key = chain.get(i);
+            ctx.upstreamBody().put("model", resolveEffectiveModel(key, ctx.defaultModel()));
             try {
                 BufferedReader reader = upstreamClient.streamUpstream(key, ctx.upstreamPath(), ctx.upstreamBody());
                 String line;
@@ -270,6 +272,16 @@ public class StreamProxy {
 
         return new StreamContext(ctx.requestId(), ctx.defaultModel(), mappedProvider, apiKeyId,
                 accumulated.toString(), stats, fallbackCount);
+    }
+
+    private static String resolveEffectiveModel(ApiKeyConfig key, String inboundModel) {
+        if (key.getModels() == null || key.getModels().isEmpty()) {
+            return inboundModel;
+        }
+        if (inboundModel != null && key.getModels().contains(inboundModel)) {
+            return inboundModel;
+        }
+        return key.getModels().get(0);
     }
 
     private static void writeChunk(OutputStream os, String chunk) {
