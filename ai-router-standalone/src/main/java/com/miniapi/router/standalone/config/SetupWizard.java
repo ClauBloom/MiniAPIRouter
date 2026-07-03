@@ -19,7 +19,7 @@ public class SetupWizard {
     }
 
     private static final Path SETUP_FILE = getBaseDir().resolve(".setup-wizard.json");
-    private static final Path CRYPTO_SECRET_FILE = getBaseDir().resolve("crypto.secret");
+    private static final Path STANDALONE_YAML = getBaseDir().resolve("standalone.yaml");
     private static final Path DB_FILE = getBaseDir().resolve("miniapi.db");
 
     private static final Map<String, String> PROVIDER_DEFAULTS = Map.of(
@@ -62,13 +62,35 @@ public class SetupWizard {
 
     public static String loadCryptoSecret() {
         try {
-            if (Files.exists(CRYPTO_SECRET_FILE)) {
-                return Files.readString(CRYPTO_SECRET_FILE).trim();
+            if (Files.exists(STANDALONE_YAML)) {
+                for (String line : Files.readAllLines(STANDALONE_YAML)) {
+                    String trimmed = line.trim();
+                    if (trimmed.startsWith("crypto-secret:")) {
+                        String secret = trimmed.substring("crypto-secret:".length()).trim();
+                        if (!secret.isEmpty()) {
+                            return secret;
+                        }
+                    }
+                }
             }
         } catch (IOException e) {
-            System.err.println("  ⚠ 无法读取加密密钥文件: " + e.getMessage());
+            System.err.println("  ⚠ 无法读取 " + STANDALONE_YAML + ": " + e.getMessage());
         }
         return null;
+    }
+
+    public static String ensureCryptoSecret() {
+        String secret = loadCryptoSecret();
+        if (secret != null && !secret.isEmpty()) {
+            return secret;
+        }
+        if (Files.exists(DB_FILE)) {
+            System.err.println("  ⚠ 数据库已存在但未找到 crypto-secret，请检查 " + STANDALONE_YAML);
+            System.exit(1);
+        }
+        secret = generateCryptoSecret();
+        saveCryptoSecret(secret);
+        return secret;
     }
 
     private static String generateCryptoSecret() {
@@ -79,8 +101,11 @@ public class SetupWizard {
 
     private static void saveCryptoSecret(String secret) {
         try {
-            Files.createDirectories(CRYPTO_SECRET_FILE.getParent());
-            Files.writeString(CRYPTO_SECRET_FILE, secret);
+            Files.createDirectories(STANDALONE_YAML.getParent());
+            StringBuilder sb = new StringBuilder();
+            sb.append("# MiniAPIRouter Standalone 配置文件\n");
+            sb.append("crypto-secret: ").append(secret).append("\n");
+            Files.writeString(STANDALONE_YAML, sb.toString());
         } catch (IOException e) {
             System.err.println("  ⚠ 无法保存加密密钥: " + e.getMessage());
         }

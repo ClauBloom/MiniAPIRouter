@@ -17,6 +17,7 @@ public class MiniApiStandaloneApplication {
     public static void main(String[] args) {
         ensureDataDirectories();
         SetupWizard.runIfFirstTime(args);
+        System.setProperty("miniapi.router.crypto-secret", SetupWizard.ensureCryptoSecret());
         SpringApplication.run(MiniApiStandaloneApplication.class, args);
     }
 

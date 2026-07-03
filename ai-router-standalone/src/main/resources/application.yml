@@ -43,7 +43,7 @@ mybatis-plus:
 
 miniapi:
   router:
-    crypto-secret: ${STANDALONE_CRYPTO_SECRET}
+    crypto-secret: ""
     blob-storage-path: ${miniapi.router.data-dir}/logs
     auth-token: sk-miniapi-standalone
 logging:
