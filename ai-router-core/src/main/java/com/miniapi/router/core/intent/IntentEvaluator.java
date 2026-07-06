@@ -26,7 +26,7 @@ public class IntentEvaluator {
     private static final int INTENT_MAX_TOKENS = 3000;
 
     private final Cache<String, IntentResult> intentCache = Caffeine.newBuilder()
-            .expireAfterWrite(5, TimeUnit.SECONDS)
+            .expireAfterWrite(30, TimeUnit.SECONDS)
             .maximumSize(10_000)
             .build();
 
@@ -64,9 +64,14 @@ public class IntentEvaluator {
 
         String cacheKey = agentActivity.isBlank() ? userQuestion
                 : userQuestion + "|" + agentActivity.substring(0, Math.min(100, agentActivity.length()));
+        log.info("[IntentEval] question='{}' agentActivity='{}' cacheKey='{}'",
+                userQuestion.substring(0, Math.min(60, userQuestion.length())),
+                agentActivity.isBlank() ? "(none)" : agentActivity,
+                cacheKey.substring(0, Math.min(120, cacheKey.length())));
         IntentResult cached = intentCache.getIfPresent(cacheKey);
         if (cached != null) {
-            log.info("[IntentEval] Cache hit for '{}', skipping eval", userQuestion.substring(0, Math.min(40, userQuestion.length())));
+            log.info("[IntentEval] Cache hit for key '{}', skipping eval",
+                    cacheKey.substring(0, Math.min(80, cacheKey.length())));
             return cached;
         }
 
@@ -87,22 +92,27 @@ public class IntentEvaluator {
             IntentResult result = callEvaluator(evalKeyCopy, intentModel, systemPrompt, userPrompt, candidates);
             if (result == null) return null;
 
-            if (result.getIntent() != null) {
-                intentCache.put(cacheKey, result);
-            }
-
             if (SPECIAL_INTENTS.contains(result.getIntent())) {
                 boolean isAgentActive = !agentActivity.isBlank()
                         && (agentActivity.contains("正在修改代码") || agentActivity.contains("派发了子Agent"));
                 if (isAgentActive) {
                     result.setScore(Math.max(60, result.getScore()));
+                    if (result.getIntent() != null) {
+                        intentCache.put(cacheKey, result);
+                    }
                     log.info("[IntentEval] Special intent '{}' but agent active, score adjusted to {}",
                             result.getIntent(), result.getScore());
                     return result;
                 }
-                log.info("[IntentEval] Special intent '{}' detected, returning null for pipeline handling",
+                log.info("[IntentEval] Special intent '{}' detected, marking for pipeline fallback",
                         result.getIntent());
-                return null;
+                result.setSpecialIntent(true);
+                intentCache.put(cacheKey, result);
+                return result;
+            }
+
+            if (result.getIntent() != null) {
+                intentCache.put(cacheKey, result);
             }
 
             log.info("[IntentEval] >> Intent={} | score={} | reasoning={} | model={} | key_id={}",

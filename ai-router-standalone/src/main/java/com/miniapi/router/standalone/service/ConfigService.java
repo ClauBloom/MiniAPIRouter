@@ -6,7 +6,8 @@ import com.miniapi.router.core.domain.ApiKeyConfig;
 import com.miniapi.router.core.domain.IntentConfig;
 import com.miniapi.router.core.domain.RouteRule;
 import com.miniapi.router.core.exception.RouterException;
-import com.miniapi.router.core.routing.InvalidIntentTracker;
+import com.miniapi.router.core.routing.FailureTracker;
+import com.miniapi.router.core.routing.SessionRouteMemory;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
 import com.miniapi.router.core.spi.RouteRuleRepository;
 import com.miniapi.router.standalone.entity.ApiKeyConfigDO;
@@ -30,17 +31,20 @@ public class ConfigService {
     private final ApiKeyConfigMapper apiKeyMapper;
     private final RouteRuleMapper ruleMapper;
     private final IntentConfigMapper intentMapper;
-    private final InvalidIntentTracker invalidIntentTracker;
+    private final FailureTracker failureTracker;
+    private final SessionRouteMemory sessionRouteMemory;
 
     public ConfigService(ApiKeyConfigRepository keyRepository, RouteRuleRepository ruleRepository,
                          ApiKeyConfigMapper apiKeyMapper, RouteRuleMapper ruleMapper,
-                         IntentConfigMapper intentMapper, InvalidIntentTracker invalidIntentTracker) {
+                         IntentConfigMapper intentMapper, FailureTracker failureTracker,
+                         SessionRouteMemory sessionRouteMemory) {
         this.keyRepository = keyRepository;
         this.ruleRepository = ruleRepository;
         this.apiKeyMapper = apiKeyMapper;
         this.ruleMapper = ruleMapper;
         this.intentMapper = intentMapper;
-        this.invalidIntentTracker = invalidIntentTracker;
+        this.failureTracker = failureTracker;
+        this.sessionRouteMemory = sessionRouteMemory;
     }
 
     // ===== API Key Config =====
@@ -55,7 +59,7 @@ public class ConfigService {
         if (config.getRetryCount() == null) config.setRetryCount(1);
         if (config.getHealthStatus() == null) config.setHealthStatus("unknown");
         keyRepository.save(config);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toKeyResponse(keyRepository.findById(config.getId()));
     }
 
@@ -66,18 +70,18 @@ public class ConfigService {
         config.setTenantId(TENANT_ID);
         if (config.getApiKey() == null) config.setApiKeyEnc(existing.getApiKeyEnc());
         keyRepository.update(config);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toKeyResponse(keyRepository.findById(id));
     }
 
     public void deleteKey(Long id) {
         keyRepository.delete(id, TENANT_ID);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
     public void updateKeyStatus(Long id, int status) {
         keyRepository.updateStatus(id, TENANT_ID, status);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
     public Map<String, Object> listKeys(int page, int pageSize) {
@@ -135,7 +139,7 @@ public class ConfigService {
         if (rule.getPriority() == null) rule.setPriority(0);
         if (rule.getEnabled() == null) rule.setEnabled(true);
         ruleRepository.save(rule);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toRuleResponse(ruleRepository.findById(rule.getId()));
     }
 
@@ -145,18 +149,18 @@ public class ConfigService {
         rule.setId(id);
         rule.setTenantId(TENANT_ID);
         ruleRepository.update(rule);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toRuleResponse(ruleRepository.findById(id));
     }
 
     public void deleteRule(Long id) {
         ruleRepository.delete(id, TENANT_ID);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
     public void updateRuleEnabled(Long id, boolean enabled) {
         ruleRepository.updateEnabled(id, TENANT_ID, enabled);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
     public Map<String, Object> listRules(int page, int pageSize) {
@@ -237,7 +241,7 @@ public class ConfigService {
         dO.setIsDefault(0);
         dO.setCustomized(0);
         intentMapper.insert(dO);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toIntentResponse(intentMapper.selectById(dO.getId()));
     }
 
@@ -259,7 +263,7 @@ public class ConfigService {
             dO.setCustomized(1);
             intentMapper.updateById(dO);
         }
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toIntentResponse(intentMapper.selectById(id));
     }
 
@@ -270,7 +274,7 @@ public class ConfigService {
             throw new RouterException("CANNOT_DELETE_DEFAULT", "默认意图路由不允许删除", 400);
         }
         intentMapper.deleteById(id);
-        invalidIntentTracker.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
     private void alignTargetKeyIds(IntentConfig config) {

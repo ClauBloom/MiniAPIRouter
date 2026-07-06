@@ -24,7 +24,8 @@ public class RoutePipeline {
     private final HealthChecker healthChecker;
     private final IntentEvaluator intentEvaluator;
     private final com.miniapi.router.core.spi.IntentCatalogProvider intentCatalogProvider;
-    private final InvalidIntentTracker invalidIntentTracker;
+    private final FailureTracker failureTracker;
+    private final SessionRouteMemory sessionRouteMemory;
     private final Map<String, RouteStrategy> strategies;
 
     public RoutePipeline(RouteRuleRepository routeRuleRepository,
@@ -32,7 +33,8 @@ public class RoutePipeline {
                          HealthChecker healthChecker,
                          IntentEvaluator intentEvaluator,
                          com.miniapi.router.core.spi.IntentCatalogProvider intentCatalogProvider,
-                         InvalidIntentTracker invalidIntentTracker,
+                         FailureTracker failureTracker,
+                         SessionRouteMemory sessionRouteMemory,
                          WeightStrategy weightStrategy,
                          PriorityStrategy priorityStrategy,
                          RoundRobinStrategy roundRobinStrategy,
@@ -42,7 +44,8 @@ public class RoutePipeline {
         this.healthChecker = healthChecker;
         this.intentEvaluator = intentEvaluator;
         this.intentCatalogProvider = intentCatalogProvider;
-        this.invalidIntentTracker = invalidIntentTracker;
+        this.failureTracker = failureTracker;
+        this.sessionRouteMemory = sessionRouteMemory;
         this.strategies = Map.of(
                 "weight", weightStrategy,
                 "priority", priorityStrategy,
@@ -82,26 +85,22 @@ public class RoutePipeline {
 
         if ("intent".equalsIgnoreCase(matched.getMatchType()) && matched.getIntentModel() != null) {
             String sessionKey = ctx.getClientIp() != null ? ctx.getClientIp() : "unknown";
-            log.info("[Route] ┌─ Intent Routing ─────────────────────────────");
-            log.info("[Route] │ rule='{}' intent_model={} candidates={}",
-                    matched.getRuleName(), matched.getIntentModel(),
-                    candidates.stream().map(k -> k.getId() + "(" + k.getName() + ")").collect(Collectors.joining(",")));
 
-            if (invalidIntentTracker.shouldUseCached(sessionKey)) {
-                InvalidIntentTracker.CachedResult cached = invalidIntentTracker.getCachedResult(sessionKey);
+            if (failureTracker.shouldFallback(sessionKey)) {
+                SessionRouteMemory.CachedResult cached = sessionRouteMemory.getLastSuccess(sessionKey);
                 if (cached != null) {
                     ApiKeyConfig cachedKey = candidates.stream()
                             .filter(k -> k.getId().equals(cached.keyId()))
                             .findFirst().orElse(null);
                     if (cachedKey != null) {
-                        log.info("[Route] │ invalid_count={} >= 3, reusing cached key_id={} intent={}",
-                                invalidIntentTracker.getInvalidCount(sessionKey), cached.keyId(), cached.intent());
-                        log.info("[Route] └──────────────────────────────────────");
+                        log.info("[Route] ┌─ Cached(failure×{}) ──────────────────────────────",
+                                failureTracker.getFailureCount(sessionKey));
+                        log.info("[Route] │ ▶ {} (key={})", cachedKey.getName(), cached.keyId());
+                        log.info("[Route] └──────────────────────────────────────────────────");
+                        failureTracker.resetFailures(sessionKey);
                         return buildResult(matched, cachedKey, candidates, cached.intent(), "intent_cached");
                     }
                 }
-                log.info("[Route] │ invalid_count={} >= 3 but no valid cache, falling back",
-                        invalidIntentTracker.getInvalidCount(sessionKey));
             }
 
             IntentWeightResult iwr = resolveIntentWeights(matched, candidates, ctx);
@@ -111,18 +110,11 @@ public class RoutePipeline {
                         intentCatalogProvider.findByLabel(ctx.getTenantId(), iwr.intent);
                 Map<String, Integer> kw = ic != null ? ic.getKeyWeights() : null;
 
-                log.info("[Route] │ intent='{}' score={} reasoning={}", iwr.intent, iwr.score, iwr.reasoning);
-
                 if (kw != null && !kw.isEmpty()) {
-                    log.info("[Route] │ key_weights: {}",
-                            kw.entrySet().stream()
-                                    .map(e -> "key" + e.getKey() + "=" + e.getValue())
-                                    .collect(Collectors.joining(", ")));
                     candidates = candidates.stream()
                             .filter(k -> kw.containsKey(String.valueOf(k.getId())))
                             .collect(Collectors.toList());
                 } else if (ic != null && ic.getTargetKeyIds() != null && !ic.getTargetKeyIds().isEmpty()) {
-                    log.info("[Route] │ target_key_ids: {}", ic.getTargetKeyIds());
                     List<ApiKeyConfig> filtered = candidates.stream()
                             .filter(k -> ic.getTargetKeyIds().contains(k.getId()))
                             .collect(Collectors.toList());
@@ -131,39 +123,60 @@ public class RoutePipeline {
                     }
                 }
 
-                log.info("[Route] │ filtered candidates: {}",
-                        candidates.stream().map(k -> k.getId() + "(" + k.getName() + ",w=" + getEffectiveWeight(k, kw) + ")")
-                                .collect(Collectors.joining(", ")));
+                String models = candidates.stream()
+                        .map(k -> String.format("%d:%s(w=%d)", k.getId(), k.getName(), getEffectiveWeight(k, kw)))
+                        .collect(Collectors.joining("  "));
+                log.info("[Route] ┌─ {}({}) ──────────────────────────────────────────",
+                        iwr.intent, iwr.score);
+                log.info("[Route] │ {}", models);
 
                 ApiKeyConfig intentSelected = selectByScore(candidates, iwr.score, kw);
                 if (intentSelected != null) {
-                    int effWeight = getEffectiveWeight(intentSelected, kw);
-                    log.info("[Route] │ ★ selected: key_id={} name={} weight={} (score={})",
-                            intentSelected.getId(), intentSelected.getName(), effWeight, iwr.score);
-                    log.info("[Route] └──────────────────────────────────────");
-                    invalidIntentTracker.resetInvalidCount(sessionKey);
-                    invalidIntentTracker.recordSelectedKey(sessionKey, intentSelected, iwr.intent, iwr.score);
+                    log.info("[Route] │ ▶ {} (key={})", intentSelected.getName(), intentSelected.getId());
+                    log.info("[Route] └──────────────────────────────────────────────────");
+                    failureTracker.resetFailures(sessionKey);
+                    sessionRouteMemory.recordSuccess(sessionKey, intentSelected, iwr.intent, iwr.score);
                     return buildResult(matched, intentSelected, candidates, iwr.intent, "intent_score");
                 }
             }
 
-            invalidIntentTracker.incrementInvalidCount(sessionKey);
-            if (invalidIntentTracker.shouldUseCached(sessionKey)) {
-                InvalidIntentTracker.CachedResult cached = invalidIntentTracker.getCachedResult(sessionKey);
+            if (iwr != null && iwr.specialIntent) {
+                SessionRouteMemory.CachedResult cached = sessionRouteMemory.getLastSuccess(sessionKey);
                 if (cached != null) {
                     ApiKeyConfig cachedKey = candidates.stream()
                             .filter(k -> k.getId().equals(cached.keyId()))
                             .findFirst().orElse(null);
                     if (cachedKey != null) {
-                        log.info("[Route] │ invalid_count reached 3, switching to cached key_id={}", cached.keyId());
-                        log.info("[Route] └──────────────────────────────────────");
+                        log.info("[Route] ┌─ {} → cached ──────────────────────",
+                                iwr.reasoning);
+                        log.info("[Route] │ ▶ {} (key={})", cachedKey.getName(), cached.keyId());
+                        log.info("[Route] └──────────────────────────────────────────────────");
                         return buildResult(matched, cachedKey, candidates, cached.intent(), "intent_cached");
                     }
                 }
+                log.info("[Route] ┌─ {} (no cache) ─────────────────────────", iwr.reasoning);
+                log.info("[Route] └──────────────────────────────────────────────────");
+            } else {
+                failureTracker.incrementFailure(sessionKey);
+                if (failureTracker.shouldFallback(sessionKey)) {
+                    SessionRouteMemory.CachedResult cached = sessionRouteMemory.getLastSuccess(sessionKey);
+                    if (cached != null) {
+                        ApiKeyConfig cachedKey = candidates.stream()
+                                .filter(k -> k.getId().equals(cached.keyId()))
+                                .findFirst().orElse(null);
+                        if (cachedKey != null) {
+                            log.info("[Route] ┌─ Cached(failure×{}) ──────────────────────────────",
+                                    failureTracker.getFailureCount(sessionKey));
+                            log.info("[Route] │ ▶ {} (key={})", cachedKey.getName(), cached.keyId());
+                            log.info("[Route] └──────────────────────────────────────────────────");
+                            failureTracker.resetFailures(sessionKey);
+                            return buildResult(matched, cachedKey, candidates, cached.intent(), "intent_cached");
+                        }
+                    }
+                }
+                log.info("[Route] ┌─ Eval Failed ───────────────────────────────────────");
+                log.info("[Route] └──────────────────────────────────────────────────");
             }
-
-            log.info("[Route] │ intent eval failed, falling back to strategy={}", matched.getStrategy());
-            log.info("[Route] └──────────────────────────────────────");
         }
 
         RouteStrategy strategy = strategies.getOrDefault(
@@ -253,6 +266,14 @@ public class RoutePipeline {
             return null;
         }
 
+        if (intentResult.isSpecialIntent()) {
+            IntentWeightResult result = new IntentWeightResult();
+            result.specialIntent = true;
+            result.score = intentResult.getScore();
+            result.reasoning = intentResult.getReasoning();
+            return result;
+        }
+
         IntentWeightResult result = new IntentWeightResult();
         result.intent = intentResult.getIntent();
         result.score = intentResult.getScore();
@@ -264,6 +285,7 @@ public class RoutePipeline {
         String intent;
         int score;
         String reasoning;
+        boolean specialIntent;
     }
 
     private RouteRule matchRule(List<RouteRule> rules, String model) {

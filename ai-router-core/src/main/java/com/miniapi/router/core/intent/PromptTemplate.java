@@ -142,19 +142,30 @@ public class PromptTemplate {
                                         taskCount++;
                                     }
                                 }
-                                String args = (String) func.get("arguments");
-                                if (args != null && !args.isBlank()) {
-                                    try {
-                                        JsonNode argsNode = JsonUtils.parse(args);
-                                        JsonNode fp = argsNode.get("filePath");
-                                        if (fp != null && fp.isTextual()) {
-                                            files.add(fp.asText());
+                                Object argsObj = func.get("arguments");
+                                if (argsObj != null) {
+                                    String argsStr = null;
+                                    if (argsObj instanceof String s) {
+                                        argsStr = s;
+                                    } else if (argsObj instanceof Map<?, ?> m) {
+                                        try {
+                                            argsStr = JsonUtils.toJson(m);
+                                        } catch (Exception ignored) {
                                         }
-                                        JsonNode path = argsNode.get("path");
-                                        if (path != null && path.isTextual()) {
-                                            files.add(path.asText());
+                                    }
+                                    if (argsStr != null && !argsStr.isBlank()) {
+                                        try {
+                                            JsonNode argsNode = JsonUtils.parse(argsStr);
+                                            JsonNode fp = argsNode.get("filePath");
+                                            if (fp != null && fp.isTextual()) {
+                                                files.add(fp.asText());
+                                            }
+                                            JsonNode path = argsNode.get("path");
+                                            if (path != null && path.isTextual()) {
+                                                files.add(path.asText());
+                                            }
+                                        } catch (Exception ignored) {
                                         }
-                                    } catch (Exception ignored) {
                                     }
                                 }
                             }

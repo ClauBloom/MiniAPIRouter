@@ -49,4 +49,4 @@ miniapi:
 logging:
   level:
     root: info
-    com.miniapi.router.standalone: debug
+    com.miniapi.router.standalone: info
