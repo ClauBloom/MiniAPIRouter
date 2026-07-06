@@ -58,22 +58,27 @@ public class IntentEvaluator {
             return null;
         }
 
+        String agentActivity = promptTemplate.extractAgentActivitySummary(messages);
+
         List<IntentConfig> catalog = catalogProvider.findAll(tenantId);
 
-        IntentResult cached = intentCache.getIfPresent(userQuestion);
+        String cacheKey = agentActivity.isBlank() ? userQuestion
+                : userQuestion + "|" + agentActivity.substring(0, Math.min(100, agentActivity.length()));
+        IntentResult cached = intentCache.getIfPresent(cacheKey);
         if (cached != null) {
             log.info("[IntentEval] Cache hit for '{}', skipping eval", userQuestion.substring(0, Math.min(40, userQuestion.length())));
             return cached;
         }
 
         String systemPrompt = promptTemplate.buildSystemPrompt(catalog);
-        String userPrompt = promptTemplate.buildUserPrompt(candidates, userQuestion);
+        String userPrompt = promptTemplate.buildUserPrompt(candidates, userQuestion, agentActivity);
 
         log.debug("[IntentEval] ===== Prompt (Intent Classification) =====");
         log.debug("[IntentEval] model={}", intentModel);
         log.debug("[IntentEval] eval_key_id={}, provider={}", evalKey.getId(), evalKey.getProvider());
         log.debug("[IntentEval] --- system prompt ---\n{}", systemPrompt);
         log.debug("[IntentEval] --- user prompt ---\n{}", userPrompt);
+        log.debug("[IntentEval] --- agent activity ---\n{}", agentActivity.isBlank() ? "(none)" : agentActivity);
         log.debug("[IntentEval] ==========================================");
 
         ApiKeyConfig evalKeyCopy = copyWithTimeout(evalKey, INTENT_TIMEOUT_MS);
@@ -83,10 +88,18 @@ public class IntentEvaluator {
             if (result == null) return null;
 
             if (result.getIntent() != null) {
-                intentCache.put(userQuestion, result);
+                intentCache.put(cacheKey, result);
             }
 
             if (SPECIAL_INTENTS.contains(result.getIntent())) {
+                boolean isAgentActive = !agentActivity.isBlank()
+                        && (agentActivity.contains("正在修改代码") || agentActivity.contains("派发了子Agent"));
+                if (isAgentActive) {
+                    result.setScore(Math.max(60, result.getScore()));
+                    log.info("[IntentEval] Special intent '{}' but agent active, score adjusted to {}",
+                            result.getIntent(), result.getScore());
+                    return result;
+                }
                 log.info("[IntentEval] Special intent '{}' detected, returning null for pipeline handling",
                         result.getIntent());
                 return null;

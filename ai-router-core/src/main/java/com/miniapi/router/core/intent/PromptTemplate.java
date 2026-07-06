@@ -1,10 +1,15 @@
 package com.miniapi.router.core.intent;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.miniapi.router.core.domain.IntentConfig;
+import com.miniapi.router.core.util.JsonUtils;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Component
 public class PromptTemplate {
@@ -38,12 +43,12 @@ public class PromptTemplate {
                   示例：排查分布式系统中的数据一致性问题(92)、重构20+模块的遗留代码库保持向后兼容(90)、实现完整WebSocket网关含鉴权限流多协议转换(91)、形式化验证分布式一致性算法(97)、定位并修复高并发下的数据竞态Bug(93)
                 - 75-89：复杂实现。需要同时满足多个约束条件的编程任务、系统架构设计。用户明确要求修bug/修复错误（如"有这个bug"、"运行报错"、"结果不对，帮我改"）通常进入此区间或更高——因为需要排查根本原因+分析已有代码+修复且不能引入新问题。
                   示例：实现带泛型+线程安全+TTL的LRU缓存(82)、设计多租户微服务架构(78)、用新框架重写单模块CRUD服务(85)
-                - 60-74：中等编码。单一约束的编程实现、项目规划、数据分析。
-                  示例：用Python实现快速排序(65)、制定项目排期计划(62)、结构化数据清洗与转换(68)
+                - 60-74：功能实现（中等偏上）。用户要求实现某功能——涉及业务逻辑、接口、流程的变更或新增，包含需求理解+方案设计+编码实现+正确性验证。60-65为简单功能实现（单一接口/单一逻辑），66-74为复杂功能实现（多接口/多逻辑协作）。
+                  示例：添加用户注册登录功能(62)、实现订单状态机(68)、对接第三方支付网关(73)
                 - 40-59：创意与转换。有约束的创意写作、复杂文本翻译、长文摘要。
                   示例：写带修辞手法的抒情散文(45)、翻译技术文档(52)、总结万字长文(55)
-                - 20-39：简单任务。基础翻译、简单问答、格式转换。
-                  示例：翻译一句话(25)、解释一个概念(32)、JSON转CSV(28)
+                - 20-39：简单执行——编写文件操作。不涉及业务逻辑变更的文件创建、修改、删除、格式整理、复制粘贴、简单配置修改。
+                  示例：创建新文件并写入模板代码(22)、修改配置文件(25)、重命名变量/方法(28)、删除无用文件(20)
                 - 1-19：极简交互。日常闲聊、简单问候、一句话指令。
                   示例："你好"(5)、"今天天气怎么样"(12)、"帮我重启服务"(18)
 
@@ -52,6 +57,15 @@ public class PromptTemplate {
                    理由：修bug意味着之前的产出质量不合格，需要更高质量的模型介入；且bug修复本身需额外付出定位根因、上下文理解、回归避免的成本。
                 2. 当用户情绪激动（如使用反问句、感叹号、指责语气、语气词"又"、"还"、"到底"等）时，额外再加5-10分。
                    理由：用户已失去耐心，必须调用更强模型一次解决问题，否则可能彻底流失。
+
+                ## Agent活动状态修正规则（仅当"Agent最近活动"非空时适用）
+                1. 如果Agent正在修改代码（edit/write）→ 最低75分，有跨文件操作时额外+5-10
+                2. 如果Agent正在执行命令（bash）→ 最低70分
+                3. 如果Agent派发了子Agent（task）→ 最低80分，任务已被扩展
+                4. 如果Agent最近操作出现错误 → +10分
+                5. 如果Agent仅读取代码未修改 → 不加分，按用户提问正常评估
+                6. 如果Agent读取了3个以上不同文件 → 额外+5
+                7. 当Agent处于活跃编码状态时，follow_up/invalid_continuation不再直接降级：如果Agent正在修改代码，follow_up应保持评分不低于上次
 
                 ## 意图标签参考
                 {{LABELS}},
@@ -69,8 +83,14 @@ public class PromptTemplate {
         return template.replace("{{LABELS}}", labels.toString());
     }
 
-    public String buildUserPrompt(List<?> candidates, String userQuestion) {
-        return "## 用户提问\n" + userQuestion + "\n\n请判断意图并评估复杂度。";
+    public String buildUserPrompt(List<?> candidates, String userQuestion, String agentActivitySummary) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## 用户提问\n").append(userQuestion).append("\n\n");
+        if (agentActivitySummary != null && !agentActivitySummary.isBlank()) {
+            sb.append("## Agent最近活动\n").append(agentActivitySummary).append("\n\n");
+        }
+        sb.append("请结合用户提问和Agent活动状态评估复杂度(1-100)和意图。");
+        return sb.toString();
     }
 
     public String buildFullHistoryPrompt(List<?> candidates, List<Map<String, Object>> messages) {
@@ -85,6 +105,96 @@ public class PromptTemplate {
         }
         sb.append("\n请根据完整对话历史判断用户最新问题的真实意图并评估复杂度。");
         return sb.toString();
+    }
+
+    public String extractAgentActivitySummary(List<Map<String, Object>> messages) {
+        if (messages == null || messages.isEmpty()) return "";
+
+        int scanCount = 0;
+        int readCount = 0;
+        int modifyCount = 0;
+        int execCount = 0;
+        int taskCount = 0;
+        boolean hasError = false;
+        Set<String> files = new HashSet<>();
+
+        for (int i = messages.size() - 1; i >= 0 && scanCount < 6; i--, scanCount++) {
+            Map<String, Object> msg = messages.get(i);
+            String role = (String) msg.get("role");
+
+            if ("assistant".equals(role)) {
+                Object tc = msg.get("tool_calls");
+                if (tc instanceof List<?> toolCalls) {
+                    for (Object tco : toolCalls) {
+                        if (tco instanceof Map<?, ?> toolCall) {
+                            Object funcObj = toolCall.get("function");
+                            if (funcObj instanceof Map<?, ?> func) {
+                                String name = (String) func.get("name");
+                                if (name != null) {
+                                    String lower = name.toLowerCase();
+                                    if (Set.of("read", "grep", "glob").contains(lower)) {
+                                        readCount++;
+                                    } else if (Set.of("edit", "write").contains(lower)) {
+                                        modifyCount++;
+                                    } else if ("bash".equals(lower)) {
+                                        execCount++;
+                                    } else if ("task".equals(lower)) {
+                                        taskCount++;
+                                    }
+                                }
+                                String args = (String) func.get("arguments");
+                                if (args != null && !args.isBlank()) {
+                                    try {
+                                        JsonNode argsNode = JsonUtils.parse(args);
+                                        JsonNode fp = argsNode.get("filePath");
+                                        if (fp != null && fp.isTextual()) {
+                                            files.add(fp.asText());
+                                        }
+                                        JsonNode path = argsNode.get("path");
+                                        if (path != null && path.isTextual()) {
+                                            files.add(path.asText());
+                                        }
+                                    } catch (Exception ignored) {
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ("tool".equals(role)) {
+                Object content = msg.get("content");
+                if (content instanceof String s && (s.contains("error") || s.contains("Error")
+                        || s.contains("fail") || s.contains("Fail") || s.contains("exception")
+                        || s.contains("Exception") || s.contains("出错") || s.contains("失败"))) {
+                    hasError = true;
+                }
+            }
+        }
+
+        List<String> parts = new ArrayList<>();
+        if (readCount > 0) parts.add("读取了" + readCount + "个文件");
+        if (modifyCount > 0) parts.add("执行了" + modifyCount + "次编辑/写入");
+        if (execCount > 0) parts.add("执行了" + execCount + "次命令");
+        if (taskCount > 0) parts.add("派发了子Agent处理复杂任务");
+        if (hasError) parts.add("最近操作出现错误");
+
+        if (parts.isEmpty()) return "";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.join("、", parts)).append("。");
+        if (modifyCount > 0) {
+            sb.append("正在修改代码。");
+        } else if (readCount > 0 && modifyCount == 0) {
+            sb.append("仍在探索项目结构。");
+        }
+        if (files.size() > 1) {
+            sb.append("涉及").append(files.size()).append("个不同文件。");
+        }
+
+        String result = sb.toString();
+        return result.length() > 150 ? result.substring(0, 147) + "..." : result;
     }
 
     public String extractUserQuestion(List<Map<String, Object>> messages) {
