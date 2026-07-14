@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS model_route_rule (
     priority INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     description TEXT,
+    agent_type TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     deleted INTEGER NOT NULL DEFAULT 0
@@ -68,6 +69,8 @@ CREATE TABLE IF NOT EXISTS request_log_meta (
     error_message TEXT,
     prompt_storage_url TEXT,
     response_storage_url TEXT,
+    agent_id TEXT,
+    agent_type TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

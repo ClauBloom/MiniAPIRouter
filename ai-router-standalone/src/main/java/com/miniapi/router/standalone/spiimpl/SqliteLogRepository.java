@@ -8,15 +8,28 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 
+/**
+ * 基于 SQLite 的日志仓储实现。
+ * <p>
+ * 实现 LogRepository SPI 接口，将请求日志元数据保存到 request_log_meta 表。
+ * 提供日志的保存和按 ID 查询功能。
+ * </p>
+ */
 @Component
 public class SqliteLogRepository implements LogRepository {
 
-    private final RequestLogMetaMapper mapper;
+    private final RequestLogMetaMapper mapper; // 日志元数据 Mapper
 
     public SqliteLogRepository(RequestLogMetaMapper mapper) {
         this.mapper = mapper;
     }
 
+    /**
+     * 保存请求日志元数据。
+     * 将域对象转换为 DO 后插入数据库。
+     *
+     * @param meta 请求日志元数据
+     */
     @Override
     public void save(RequestLogMeta meta) {
         RequestLogMetaDO dO = new RequestLogMetaDO();
@@ -42,10 +55,18 @@ public class SqliteLogRepository implements LogRepository {
         dO.setErrorMessage(meta.getErrorMessage());
         dO.setPromptStorageUrl(meta.getPromptStorageUrl());
         dO.setResponseStorageUrl(meta.getResponseStorageUrl());
+        dO.setAgentId(meta.getAgentId());
+        dO.setAgentType(meta.getAgentType());
         dO.setCreatedAt(meta.getCreatedAt() != null ? meta.getCreatedAt() : LocalDateTime.now());
         mapper.insert(dO);
     }
 
+    /**
+     * 根据 ID 查询日志元数据。
+     *
+     * @param id 日志 ID
+     * @return 日志元数据，不存在返回 null
+     */
     @Override
     public RequestLogMeta findById(Long id) {
         RequestLogMetaDO dO = mapper.selectById(id);
@@ -53,6 +74,12 @@ public class SqliteLogRepository implements LogRepository {
         return toDomain(dO);
     }
 
+    /**
+     * 将 DO 转换为域对象。
+     *
+     * @param dO 数据对象
+     * @return 域对象
+     */
     private RequestLogMeta toDomain(RequestLogMetaDO dO) {
         RequestLogMeta m = new RequestLogMeta();
         m.setId(dO.getId());
@@ -78,6 +105,8 @@ public class SqliteLogRepository implements LogRepository {
         m.setErrorMessage(dO.getErrorMessage());
         m.setPromptStorageUrl(dO.getPromptStorageUrl());
         m.setResponseStorageUrl(dO.getResponseStorageUrl());
+        m.setAgentId(dO.getAgentId());
+        m.setAgentType(dO.getAgentType());
         m.setCreatedAt(dO.getCreatedAt());
         return m;
     }

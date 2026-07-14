@@ -23,14 +23,23 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Consumer;
 
+/**
+ * 流代理：负责将路由结果转化为对上游 AI API 的实际调用。
+ * 支持两种模式：
+ * <ul>
+ *   <li><b>非流式代理</b>：同步调用上游，解析响应并返回统一格式</li>
+ *   <li><b>流式代理</b>：通过 SSE 长连接透传上游流式输出，支持回退切换</li>
+ * </ul>
+ * 同时负责协议转换、Token 估算、用量上报和回退信号发射。
+ */
 @Component
 public class StreamProxy {
 
     private static final Logger log = LoggerFactory.getLogger(StreamProxy.class);
 
-    private final UpstreamStreamClient upstreamClient;
-    private final ProtocolRegistry protocolRegistry;
-    private final ReasoningContentCache reasoningCache;
+    private final UpstreamStreamClient upstreamClient;      // 上游 HTTP 客户端
+    private final ProtocolRegistry protocolRegistry;         // 协议注册表
+    private final ReasoningContentCache reasoningCache;      // 推理内容缓存
 
     public StreamProxy(UpstreamStreamClient upstreamClient, ProtocolRegistry protocolRegistry,
                        ReasoningContentCache reasoningCache) {
@@ -39,11 +48,17 @@ public class StreamProxy {
         this.reasoningCache = reasoningCache;
     }
 
+    /** 非流式代理结果 */
     public record ProxyResult(UnifiedResponse response, String mappedProvider, Long apiKeyId) {}
 
+    /**
+     * 非流式代理：按路由结果调用上游，支持回退链。
+     * 依次尝试主选 Key 和回退链中的 Key，直到成功或全部失败。
+     */
     public ProxyResult proxyNonStream(RouteResult routeResult, String inboundProtocol,
                                       String upstreamPath, Map<String, Object> upstreamBody,
                                       String defaultModel, String requestId) {
+        /* 构建调用链：主 Key + 回退链 */
         List<ApiKeyConfig> chain = new ArrayList<>();
         chain.add(routeResult.getSelectedKey());
         if (routeResult.hasFallback()) chain.addAll(routeResult.getFallbackChain());
@@ -56,8 +71,9 @@ public class StreamProxy {
                 UpstreamStreamClient.NonStreamResult result = upstreamClient.callUpstream(key, upstreamPath, upstreamBody);
                 if (result.statusCode() >= 400) {
                     lastError = new UpstreamException("Upstream " + key.getProvider() + " returned " + result.statusCode());
-                    continue;
+                    continue;  // HTTP 错误状态码则尝试下一个回退 Key
                 }
+                /* 将上游原生响应解析为统一格式 */
                 UnifiedResponse unified = parseUpstreamResponse(result.body(), inboundProtocol, key, defaultModel, requestId);
                 reasoningCache.store(unified.getContent(), unified.getReasoningContent());
                 return new ProxyResult(unified, key.getProvider(), key.getId());
@@ -68,6 +84,10 @@ public class StreamProxy {
         throw new AllUpstreamFailedException("所有上游服务均不可用: " + (lastError != null ? lastError.getMessage() : ""));
     }
 
+    /**
+     * 解析上游非流式响应为统一格式。
+     * 根据 Key 的协议类型（openai/anthropic）采用不同的解析逻辑。
+     */
     @SuppressWarnings("unchecked")
     private UnifiedResponse parseUpstreamResponse(String body, String inboundProtocol, ApiKeyConfig key,
                                                   String defaultModel, String requestId) {
@@ -77,6 +97,7 @@ public class StreamProxy {
         resp.setModel(node.path("model").asText(defaultModel));
         resp.setId(node.path("id").asText(requestId));
 
+        /* OpenAI 协议解析：取 choices[0].message */
         if ("openai".equalsIgnoreCase(key.getProtocol())) {
             JsonNode choices = node.path("choices");
             if (choices.isArray() && !choices.isEmpty()) {
@@ -89,11 +110,13 @@ public class StreamProxy {
                 }
             }
         } else {
+            /* Anthropic 协议解析：从 content 数组中提取文本 */
             resp.setContent(extractAnthropicContent(node));
             resp.setRole("assistant");
             resp.setFinishReason(mapAnthropicStop(node.path("stop_reason").asText("end_turn")));
         }
 
+        /* 解析 Token 用量信息，兼容 OpenAI(prompt_tokens) 和 Anthropic(input_tokens) 两种命名 */
         JsonNode usage = node.path("usage");
         if (!usage.isMissingNode()) {
             resp.setPromptTokens(usage.path("prompt_tokens").asInt(usage.path("input_tokens").asInt(0)));
@@ -103,6 +126,7 @@ public class StreamProxy {
         return resp;
     }
 
+    /** 从 Anthropic 响应的 content 数组中提取所有 text 类型的文本块并拼接 */
     private String extractAnthropicContent(JsonNode node) {
         JsonNode content = node.path("content");
         if (content.isArray()) {
@@ -117,6 +141,7 @@ public class StreamProxy {
         return "";
     }
 
+    /** 将 Anthropic 的 stop_reason 映射为 OpenAI 风格的 finish_reason */
     private String mapAnthropicStop(String reason) {
         return switch (reason) {
             case "end_turn" -> "stop";
@@ -126,6 +151,7 @@ public class StreamProxy {
         };
     }
 
+    /** 流式代理的上下文参数 */
     public record StreamProxyContext(
             RouteResult routeResult,
             String inboundProtocol,
@@ -137,6 +163,7 @@ public class StreamProxy {
             Consumer<UsageStats> usageConsumer
     ) {}
 
+    /** 流式代理返回结果 */
     public record StreamContext(
             String requestId,
             String model,
@@ -147,20 +174,27 @@ public class StreamProxy {
             int fallbackCount
     ) {}
 
+    /**
+     * 流式代理：建立上游 SSE 连接，实时解析并转换流式数据块，
+     * 通过 OutputStream 输出到下游客户端。
+     * 支持上游失败时的静默回退（未发送任何内容时）和显式回退信号。
+     */
     public StreamContext proxyStream(StreamProxyContext ctx, OutputStream os) {
+        /* 构建调用链 */
         List<ApiKeyConfig> chain = new ArrayList<>();
         chain.add(ctx.routeResult().getSelectedKey());
         if (ctx.routeResult().hasFallback()) chain.addAll(ctx.routeResult().getFallbackChain());
 
         StreamConverter streamConverter = protocolRegistry.getStreamConverter(ctx.inboundProtocol());
 
-        StringBuilder accumulated = new StringBuilder();
-        StringBuilder accumulatedReasoning = new StringBuilder();
-        boolean firstChunk = true;
+        /* 状态变量 */
+        StringBuilder accumulated = new StringBuilder();           // 累积的文本内容
+        StringBuilder accumulatedReasoning = new StringBuilder();  // 累积的推理内容
+        boolean firstChunk = true;                                 // 是否首个 chunk
         int promptTokens = 0;
         int completionTokens = 0;
         long startTime = System.currentTimeMillis();
-        long ttft = 0;
+        long ttft = 0;                                             // Time To First Token
         int fallbackCount = 0;
         String mappedProvider = null;
         Long apiKeyId = null;
@@ -173,15 +207,18 @@ public class StreamProxy {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (line.isEmpty()) continue;
+                    /* 解析每行 SSE 数据为统一流式块 */
                     Object parsed = DeltaJsonParser.parseSseLine(line, key.getProtocol(), ctx.requestId(), ctx.defaultModel());
                     if (parsed == null) continue;
                     if (parsed == DeltaJsonParser.DONE) {
-                        break;
+                        break;  // 流结束
                     }
                     if (parsed instanceof UnifiedStreamChunk chunk) {
+                        /* 记录首 Token 时间 */
                         if (ttft == 0 && (chunk.getDeltaContent() != null || chunk.getDeltaRole() != null)) {
                             ttft = System.currentTimeMillis() - startTime;
                         }
+                        /* 确保首个 chunk 有 assistant 角色 */
                         if (firstChunk && chunk.getDeltaRole() == null) {
                             chunk.setDeltaRole("assistant");
                         }
@@ -193,22 +230,25 @@ public class StreamProxy {
                         if (chunk.getReasoningContent() != null) {
                             accumulatedReasoning.append(chunk.getReasoningContent());
                         }
+                        /* 覆盖 id/model 为请求级标识，再转换为下游协议格式输出 */
                         chunk.setId(ctx.requestId());
                         chunk.setModel(ctx.defaultModel());
                         writeChunk(os, streamConverter.toSseChunk(chunk, ctx.inboundProtocol()));
                     }
                 }
+                /* 缓存推理内容供后续使用 */
                 reasoningCache.store(accumulated.toString(), accumulatedReasoning.toString());
                 reader.close();
                 mappedProvider = key.getProvider();
                 apiKeyId = key.getId();
-                break;
+                break;  // 成功则跳出调用链
             } catch (Exception e) {
                 fallbackCount++;
                 if (i < chain.size() - 1) {
                     ApiKeyConfig nextKey = chain.get(i + 1);
                     int maxFallback = ctx.routeResult().getMatchedRule().getMaxFallback() != null
                             ? ctx.routeResult().getMatchedRule().getMaxFallback() : 2;
+                    /* 构建回退事件 */
                     FallbackEvent event = FallbackEvent.builder()
                             .reason("upstream_error")
                             .failedProvider(key.getProvider())
@@ -222,6 +262,7 @@ public class StreamProxy {
                             .build();
                     String fbChunk = streamConverter.toFallbackSseChunk(event);
                     if (fbChunk == null || fbChunk.isEmpty()) {
+                        /* 静默回退：尚未发送内容，可安全切换到下一个 Key */
                         if (firstChunk) {
                             log.info("[StreamProxy] Silent fallback from {} to {} (no content sent yet)",
                                     key.getProvider(), nextKey.getProvider());
@@ -230,6 +271,7 @@ public class StreamProxy {
                             completionTokens = 0;
                             ttft = 0;
                         } else {
+                            /* 已发送内容，无法静默回退，发送中断错误 */
                             log.warn("[StreamProxy] Cannot fallback in {} protocol (content already sent), stopping",
                                     ctx.inboundProtocol());
                             writeChunk(os, streamConverter.toErrorSseChunk("UPSTREAM_INTERRUPTED",
@@ -237,16 +279,19 @@ public class StreamProxy {
                             break;
                         }
                     } else {
+                        /* 显式回退：下发回退事件信号 */
                         writeChunk(os, fbChunk);
                         firstChunk = false;
                     }
                 } else {
+                    /* 所有上游均失败，发送全部失败错误 */
                     writeChunk(os, streamConverter.toErrorSseChunk("ALL_UPSTREAM_FAILED",
                             "所有上游服务均不可用: " + e.getMessage(), ctx.traceId()));
                 }
             }
         }
 
+        /* 计算并构建用量统计 */
         promptTokens = TokenCounter.estimate(JsonUtils.toJson(ctx.upstreamBody().get("messages")));
         int totalTokens = promptTokens + completionTokens;
         int latencyMs = (int) (System.currentTimeMillis() - startTime);
@@ -267,6 +312,7 @@ public class StreamProxy {
             ctx.usageConsumer().accept(stats);
         }
 
+        /* 输出用量统计和流结束标记 */
         writeChunk(os, streamConverter.toUsageSseChunk(stats));
         writeChunk(os, streamConverter.toDoneMark(ctx.inboundProtocol()));
 
@@ -274,6 +320,10 @@ public class StreamProxy {
                 accumulated.toString(), stats, fallbackCount);
     }
 
+    /**
+     * 确定向上游发送的实际模型名称。
+     * 若 Key 的 models 包含入站模型则原样使用，否则使用 Key 的第一个模型。
+     */
     private static String resolveEffectiveModel(ApiKeyConfig key, String inboundModel) {
         if (key.getModels() == null || key.getModels().isEmpty()) {
             return inboundModel;
@@ -284,6 +334,7 @@ public class StreamProxy {
         return key.getModels().get(0);
     }
 
+    /** 将 SSE 字符串写入 OutputStream 并立即刷新 */
     private static void writeChunk(OutputStream os, String chunk) {
         try {
             os.write(chunk.getBytes(StandardCharsets.UTF_8));

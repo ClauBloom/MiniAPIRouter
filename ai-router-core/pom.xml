@@ -12,7 +12,7 @@
 
     <artifactId>ai-router-core</artifactId>
     <name>MiniAPIRouter Core SDK</name>
-    <version>1.0.1-SNAPSHOT</version>
+    <version>1.0.2</version>
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -7,9 +7,18 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 默认意图分类目录提供者。
+ * <p>
+ * 内置了一套默认的意图分类体系（推理思考、日常聊天、项目规划、简单执行、
+ * 代码开发、长文本摘要、创意写作、结构化提取），作为 {@link IntentCatalogProvider} 的默认实现。
+ * 当未配置自定义意图目录时，使用此默认目录。
+ * </p>
+ */
 @Component
 public class DefaultIntentCatalogProvider implements IntentCatalogProvider {
 
+    /** 预构建的默认意图分类目录（静态不可变列表） */
     private static final List<IntentConfig> DEFAULT_CATALOG = buildDefaultCatalog();
 
     @Override
@@ -26,6 +35,7 @@ public class DefaultIntentCatalogProvider implements IntentCatalogProvider {
                 .orElse(null);
     }
 
+    /** 构建默认意图分类列表（8 种预定义分类） */
     private static List<IntentConfig> buildDefaultCatalog() {
         return List.of(
                 intent("reasoning", "推理思考", "逻辑分析、数学计算、复杂推理", 1),
@@ -39,6 +49,7 @@ public class DefaultIntentCatalogProvider implements IntentCatalogProvider {
         );
     }
 
+    /** 便捷构建单个 IntentConfig 对象的工厂方法 */
     private static IntentConfig intent(String label, String name, String description, int sortOrder) {
         IntentConfig c = new IntentConfig();
         c.setLabel(label);

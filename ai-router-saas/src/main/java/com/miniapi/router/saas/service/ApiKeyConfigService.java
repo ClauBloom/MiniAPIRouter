@@ -19,12 +19,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * API Key 配置服务
+ * <p>
+ * 提供上游 AI 提供商的 API Key 配置管理功能，包括创建、查询、更新、删除和健康检查。
+ * 每个配置代表一个上游提供商的 API Key，包含提供商信息、协议类型、权重、优先级、并发限制等参数。
+ * </p>
+ * <p>
+ * 所有操作都基于当前租户上下文，确保数据隔离。
+ * </p>
+ */
 @Service
 public class ApiKeyConfigService {
 
-    private final ApiKeyConfigRepository keyRepository;
-    private final ApiKeyConfigMapper mapper;
-    private final CryptoUtils cryptoUtils;
+    private final ApiKeyConfigRepository keyRepository;  // API Key 配置仓库（SPI 层），支持缓存
+    private final ApiKeyConfigMapper mapper;              // MyBatis-Plus Mapper，用于分页查询
+    private final CryptoUtils cryptoUtils;                // 加密工具类，用于脱敏显示
 
     public ApiKeyConfigService(ApiKeyConfigRepository keyRepository, ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils) {
         this.keyRepository = keyRepository;
@@ -32,12 +42,19 @@ public class ApiKeyConfigService {
         this.cryptoUtils = cryptoUtils;
     }
 
+    /**
+     * 创建 API Key 配置
+     *
+     * @param req API Key 配置请求对象
+     * @return 创建后的配置信息（脱敏后的 Map）
+     */
     public Map<String, Object> create(ApiKeyConfigRequest req) {
         Long tenantId = TenantContext.getTenantId();
         ApiKeyConfig config = new ApiKeyConfig();
         config.setTenantId(tenantId);
         config.setName(req.getName());
         config.setProvider(req.getProvider());
+        // 若未指定协议，则根据提供商自动推断
         config.setProtocol(req.getProtocol() != null ? req.getProtocol() : inferProtocol(req.getProvider()));
         config.setApiKey(req.getApiKey());
         config.setBaseUrl(req.getBaseUrl());
@@ -54,6 +71,16 @@ public class ApiKeyConfigService {
         return toResponse(config);
     }
 
+    /**
+     * 分页查询 API Key 配置列表
+     *
+     * @param page         页码
+     * @param pageSize     每页条数
+     * @param provider     提供商过滤条件（可选）
+     * @param status       状态过滤条件（可选）
+     * @param healthStatus 健康状态过滤条件（可选）
+     * @return 分页结果
+     */
     public PageResult<Map<String, Object>> list(int page, int pageSize, String provider, Integer status, String healthStatus) {
         Long tenantId = TenantContext.getTenantId();
         LambdaQueryWrapper<ApiKeyConfigDO> wrapper = new LambdaQueryWrapper<>();
@@ -65,6 +92,7 @@ public class ApiKeyConfigService {
 
         Page<ApiKeyConfigDO> p = new Page<>(page, pageSize);
         Page<ApiKeyConfigDO> result = mapper.selectPage(p, wrapper);
+        // 通过仓库层逐条查询完整配置（包含解密后的 API Key），若查询失败则从 DO 直接转换
         List<Map<String, Object>> list = result.getRecords().stream().map(dO -> {
             ApiKeyConfig c = keyRepository.findById(dO.getId());
             return c != null ? toResponse(c) : toResponseFromDO(dO);
@@ -72,12 +100,25 @@ public class ApiKeyConfigService {
         return new PageResult<>(list, result.getTotal(), page, pageSize);
     }
 
+    /**
+     * 更新 API Key 配置
+     * <p>
+     * 仅更新请求中非空的字段，支持部分更新。
+     * </p>
+     *
+     * @param id  配置ID
+     * @param req 更新请求对象
+     * @return 更新后的配置信息（脱敏后的 Map）
+     * @throws RouterException 当配置不存在或不属于当前租户时抛出 404
+     */
     public Map<String, Object> update(Long id, ApiKeyConfigRequest req) {
         Long tenantId = TenantContext.getTenantId();
         ApiKeyConfig config = keyRepository.findById(id);
+        // 校验配置存在性及租户归属
         if (config == null || !config.getTenantId().equals(tenantId)) {
             throw new RouterException("RESOURCE_NOT_FOUND", "API Key 配置不存在", 404);
         }
+        // 逐字段条件更新，仅更新非空字段
         if (req.getName() != null) config.setName(req.getName());
         if (req.getProvider() != null) config.setProvider(req.getProvider());
         if (req.getProtocol() != null) config.setProtocol(req.getProtocol());
@@ -94,16 +135,37 @@ public class ApiKeyConfigService {
         return toResponse(keyRepository.findById(id));
     }
 
+    /**
+     * 删除 API Key 配置
+     *
+     * @param id 配置ID
+     */
     public void delete(Long id) {
         Long tenantId = TenantContext.getTenantId();
         keyRepository.delete(id, tenantId);
     }
 
+    /**
+     * 更新 API Key 配置状态（启用/禁用）
+     *
+     * @param id      配置ID
+     * @param enabled 是否启用
+     */
     public void updateStatus(Long id, boolean enabled) {
         Long tenantId = TenantContext.getTenantId();
         keyRepository.updateStatus(id, tenantId, enabled ? 1 : 0);
     }
 
+    /**
+     * 健康检查
+     * <p>
+     * 返回指定 API Key 配置的当前健康状态。
+     * </p>
+     *
+     * @param id 配置ID
+     * @return 健康检查结果
+     * @throws RouterException 当配置不存在时抛出 404
+     */
     public Map<String, Object> healthCheck(Long id) {
         ApiKeyConfig config = keyRepository.findById(id);
         if (config == null) throw new RouterException("RESOURCE_NOT_FOUND", "配置不存在", 404);
@@ -114,10 +176,22 @@ public class ApiKeyConfigService {
         return result;
     }
 
+    /**
+     * 根据提供商推断协议类型
+     *
+     * @param provider 提供商名称
+     * @return 协议类型（anthropic 或 openai）
+     */
     private String inferProtocol(String provider) {
         return "anthropic".equalsIgnoreCase(provider) ? "anthropic" : "openai";
     }
 
+    /**
+     * 将领域对象转换为响应 Map（包含脱敏的 API Key）
+     *
+     * @param c API Key 配置领域对象
+     * @return 响应 Map，包含完整配置信息（API Key 已脱敏）
+     */
     private Map<String, Object> toResponse(ApiKeyConfig c) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", c.getId());
@@ -139,6 +213,12 @@ public class ApiKeyConfigService {
         return m;
     }
 
+    /**
+     * 将 DO 对象转换为响应 Map（不含脱敏 API Key，用于仓库层查询失败的回退场景）
+     *
+     * @param dO API Key 配置 DO 对象
+     * @return 响应 Map，包含基本配置信息
+     */
     private Map<String, Object> toResponseFromDO(ApiKeyConfigDO dO) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", dO.getId());

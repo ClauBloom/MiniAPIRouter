@@ -21,18 +21,25 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 配置管理服务。
+ * <p>
+ * 提供 API Key 配置、路由规则和意图配置的业务逻辑处理。
+ * 每次配置变更后会清除失败追踪器和会话路由内存缓存，确保路由使用最新配置。
+ * </p>
+ */
 @Service
 public class ConfigService {
 
-    private static final Long TENANT_ID = 1L;
+    private static final Long TENANT_ID = 1L; // 独立版固定租户 ID
 
-    private final ApiKeyConfigRepository keyRepository;
-    private final RouteRuleRepository ruleRepository;
-    private final ApiKeyConfigMapper apiKeyMapper;
-    private final RouteRuleMapper ruleMapper;
-    private final IntentConfigMapper intentMapper;
-    private final FailureTracker failureTracker;
-    private final SessionRouteMemory sessionRouteMemory;
+    private final ApiKeyConfigRepository keyRepository;   // API Key 仓储
+    private final RouteRuleRepository ruleRepository;     // 路由规则仓储
+    private final ApiKeyConfigMapper apiKeyMapper;        // API Key Mapper（直接操作数据库）
+    private final RouteRuleMapper ruleMapper;             // 路由规则 Mapper
+    private final IntentConfigMapper intentMapper;        // 意图配置 Mapper
+    private final FailureTracker failureTracker;          // 失败追踪器（配置变更后清除）
+    private final SessionRouteMemory sessionRouteMemory;  // 会话路由内存（配置变更后清除）
 
     public ConfigService(ApiKeyConfigRepository keyRepository, RouteRuleRepository ruleRepository,
                          ApiKeyConfigMapper apiKeyMapper, RouteRuleMapper ruleMapper,
@@ -47,10 +54,18 @@ public class ConfigService {
         this.sessionRouteMemory = sessionRouteMemory;
     }
 
-    // ===== API Key Config =====
+    // ===== API Key 配置管理 =====
 
+    /**
+     * 创建 API Key 配置。
+     * 设置默认值后保存，并清除路由缓存。
+     *
+     * @param config API Key 配置
+     * @return 创建后的 API Key 响应数据
+     */
     public Map<String, Object> createKey(ApiKeyConfig config) {
         config.setTenantId(TENANT_ID);
+        // 设置默认值
         if (config.getStatus() == null) config.setStatus(1);
         if (config.getWeight() == null) config.setWeight(1);
         if (config.getPriority() == null) config.setPriority(0);
@@ -59,31 +74,58 @@ public class ConfigService {
         if (config.getRetryCount() == null) config.setRetryCount(1);
         if (config.getHealthStatus() == null) config.setHealthStatus("unknown");
         keyRepository.save(config);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        failureTracker.clearAll(); sessionRouteMemory.clearAll(); // 清除路由缓存
         return toKeyResponse(keyRepository.findById(config.getId()));
     }
 
+    /**
+     * 更新 API Key 配置。
+     * 如果未提供 API Key，则保留原有的加密 Key。
+     *
+     * @param id     API Key ID
+     * @param config 更新的配置
+     * @return 更新后的 API Key 响应数据
+     */
     public Map<String, Object> updateKey(Long id, ApiKeyConfig config) {
         ApiKeyConfig existing = keyRepository.findById(id);
         if (existing == null) throw new RouterException("RESOURCE_NOT_FOUND", "Key not found", 404);
         config.setId(id);
         config.setTenantId(TENANT_ID);
+        // 如果未提供新的 API Key，保留原有加密 Key
         if (config.getApiKey() == null) config.setApiKeyEnc(existing.getApiKeyEnc());
         keyRepository.update(config);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toKeyResponse(keyRepository.findById(id));
     }
 
+    /**
+     * 删除 API Key。
+     *
+     * @param id API Key ID
+     */
     public void deleteKey(Long id) {
         keyRepository.delete(id, TENANT_ID);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
+    /**
+     * 更新 API Key 的启用/禁用状态。
+     *
+     * @param id     API Key ID
+     * @param status 状态（1=启用, 0=禁用）
+     */
     public void updateKeyStatus(Long id, int status) {
         keyRepository.updateStatus(id, TENANT_ID, status);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
+    /**
+     * 分页查询 API Key 列表。
+     *
+     * @param page     页码
+     * @param pageSize 每页条数
+     * @return 包含列表和分页信息的 Map
+     */
     public Map<String, Object> listKeys(int page, int pageSize) {
         LambdaQueryWrapper<ApiKeyConfigDO> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(ApiKeyConfigDO::getTenantId, TENANT_ID).orderByDesc(ApiKeyConfigDO::getCreatedAt);
@@ -95,12 +137,24 @@ public class ConfigService {
         return Map.of("list", list, "total", result.getTotal(), "page", page, "page_size", pageSize);
     }
 
+    /**
+     * 根据 ID 查询单个 API Key。
+     *
+     * @param id API Key ID
+     * @return API Key 响应数据
+     */
     public Map<String, Object> getKey(Long id) {
         ApiKeyConfig config = keyRepository.findById(id);
         if (config == null) throw new RouterException("RESOURCE_NOT_FOUND", "Key not found", 404);
         return toKeyResponse(config);
     }
 
+    /**
+     * 将 API Key 域对象转换为响应 Map（API Key 做掩码处理）。
+     *
+     * @param c API Key 域对象
+     * @return 响应 Map
+     */
     private Map<String, Object> toKeyResponse(ApiKeyConfig c) {
         if (c == null) return Map.of();
         Map<String, Object> m = new LinkedHashMap<>();
@@ -118,20 +172,34 @@ public class ConfigService {
         m.put("retry_count", c.getRetryCount());
         m.put("status", c.getStatus());
         m.put("health_status", c.getHealthStatus());
-        m.put("api_key_masked", maskKey(c.getApiKey()));
+        m.put("api_key_masked", maskKey(c.getApiKey())); // 掩码处理，不返回完整 Key
         m.put("created_at", c.getCreatedAt());
         return m;
     }
 
+    /**
+     * 对 API Key 进行掩码处理（仅显示前 3 位和后 4 位）。
+     *
+     * @param key 原始 API Key
+     * @return 掩码后的字符串
+     */
     private String maskKey(String key) {
         if (key == null || key.length() < 8) return "***";
         return key.substring(0, 3) + "..." + key.substring(key.length() - 4);
     }
 
-    // ===== Route Rule =====
+    // ===== 路由规则管理 =====
 
+    /**
+     * 创建路由规则。
+     * 设置默认值后保存，并清除路由缓存。
+     *
+     * @param rule 路由规则
+     * @return 创建后的路由规则响应数据
+     */
     public Map<String, Object> createRule(RouteRule rule) {
         rule.setTenantId(TENANT_ID);
+        // 设置默认值
         if (rule.getStrategy() == null) rule.setStrategy("weight");
         if (rule.getMatchType() == null) rule.setMatchType("model");
         if (rule.getFallbackEnabled() == null) rule.setFallbackEnabled(true);
@@ -143,6 +211,13 @@ public class ConfigService {
         return toRuleResponse(ruleRepository.findById(rule.getId()));
     }
 
+    /**
+     * 更新路由规则。
+     *
+     * @param id   路由规则 ID
+     * @param rule 更新的规则
+     * @return 更新后的路由规则响应数据
+     */
     public Map<String, Object> updateRule(Long id, RouteRule rule) {
         RouteRule existing = ruleRepository.findById(id);
         if (existing == null) throw new RouterException("RESOURCE_NOT_FOUND", "Rule not found", 404);
@@ -153,16 +228,34 @@ public class ConfigService {
         return toRuleResponse(ruleRepository.findById(id));
     }
 
+    /**
+     * 删除路由规则。
+     *
+     * @param id 路由规则 ID
+     */
     public void deleteRule(Long id) {
         ruleRepository.delete(id, TENANT_ID);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
+    /**
+     * 更新路由规则的启用/禁用状态。
+     *
+     * @param id      路由规则 ID
+     * @param enabled 是否启用
+     */
     public void updateRuleEnabled(Long id, boolean enabled) {
         ruleRepository.updateEnabled(id, TENANT_ID, enabled);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
+    /**
+     * 分页查询路由规则列表。
+     *
+     * @param page     页码
+     * @param pageSize 每页条数
+     * @return 包含列表和分页信息的 Map
+     */
     public Map<String, Object> listRules(int page, int pageSize) {
         LambdaQueryWrapper<RouteRuleDO> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(RouteRuleDO::getTenantId, TENANT_ID).orderByDesc(RouteRuleDO::getCreatedAt);
@@ -174,12 +267,25 @@ public class ConfigService {
         return Map.of("list", list, "total", result.getTotal(), "page", page, "page_size", pageSize);
     }
 
+    /**
+     * 根据 ID 查询单个路由规则。
+     *
+     * @param id 路由规则 ID
+     * @return 路由规则响应数据
+     */
     public Map<String, Object> getRule(Long id) {
         RouteRule rule = ruleRepository.findById(id);
         if (rule == null) throw new RouterException("RESOURCE_NOT_FOUND", "Rule not found", 404);
         return toRuleResponse(rule);
     }
 
+    /**
+     * 将路由规则域对象转换为响应 Map。
+     * 如果配置了目标 Key ID，会查询并附加目标 Key 的摘要信息。
+     *
+     * @param r 路由规则域对象
+     * @return 响应 Map
+     */
     private Map<String, Object> toRuleResponse(RouteRule r) {
         if (r == null) return Map.of();
         Map<String, Object> m = new LinkedHashMap<>();
@@ -188,6 +294,7 @@ public class ConfigService {
         m.put("match_type", r.getMatchType());
         m.put("match_pattern", r.getMatchPattern());
         m.put("target_key_ids", r.getTargetKeyIds());
+        // 如果配置了目标 Key，查询并附加摘要信息
         if (r.getTargetKeyIds() != null && !r.getTargetKeyIds().isEmpty()) {
             List<ApiKeyConfig> keys = keyRepository.findByIds(r.getTargetKeyIds());
             List<Map<String, Object>> targetKeys = keys.stream().map(k -> {
@@ -208,12 +315,18 @@ public class ConfigService {
         m.put("priority", r.getPriority());
         m.put("enabled", r.getEnabled());
         m.put("description", r.getDescription());
+        m.put("agent_type", r.getAgentType());
         m.put("created_at", r.getCreatedAt());
         return m;
     }
 
-    // ===== Intent Config =====
+    // ===== 意图配置管理 =====
 
+    /**
+     * 查询所有意图配置列表（按排序顺序排列）。
+     *
+     * @return 包含列表和总数的 Map
+     */
     public Map<String, Object> listIntents() {
         LambdaQueryWrapper<IntentConfigDO> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(IntentConfigDO::getTenantId, TENANT_ID).orderByAsc(IntentConfigDO::getSortOrder);
@@ -224,27 +337,50 @@ public class ConfigService {
         return Map.of("list", result, "total", (long) list.size());
     }
 
+    /**
+     * 根据 ID 查询单个意图配置。
+     *
+     * @param id 意图配置 ID
+     * @return 意图配置响应数据
+     */
     public Map<String, Object> getIntent(Long id) {
         IntentConfigDO dO = intentMapper.selectById(id);
         if (dO == null) throw new RouterException("RESOURCE_NOT_FOUND", "Intent not found", 404);
         return toIntentResponse(dO);
     }
 
+    /**
+     * 创建意图配置。
+     * 设置默认值并对齐目标 Key ID 后保存。
+     *
+     * @param config 意图配置
+     * @return 创建后的意图配置响应数据
+     */
     public Map<String, Object> createIntent(IntentConfig config) {
         config.setTenantId(TENANT_ID);
+        // 设置默认值
         if (config.getEnabled() == null) config.setEnabled(true);
         if (config.getSortOrder() == null) config.setSortOrder(0);
         if (config.getTargetKeyIds() == null) config.setTargetKeyIds(List.of());
         if (config.getKeyWeights() == null) config.setKeyWeights(Map.of());
-        alignTargetKeyIds(config);
+        alignTargetKeyIds(config); // 根据权重 Map 对齐目标 Key ID 列表
         IntentConfigDO dO = toIntentDO(config);
-        dO.setIsDefault(0);
-        dO.setCustomized(0);
+        dO.setIsDefault(0);   // 新建的意图不是默认意图
+        dO.setCustomized(0);  // 新建的意图未被自定义
         intentMapper.insert(dO);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
         return toIntentResponse(intentMapper.selectById(dO.getId()));
     }
 
+    /**
+     * 更新意图配置。
+     * 如果更新的是默认意图，则同步配置到所有未自定义的意图（级联更新）。
+     * 如果更新的是普通意图，则标记为已自定义。
+     *
+     * @param id     意图配置 ID
+     * @param config 更新的配置
+     * @return 更新后的意图配置响应数据
+     */
     public Map<String, Object> updateIntent(Long id, IntentConfig config) {
         IntentConfigDO existing = intentMapper.selectById(id);
         if (existing == null) throw new RouterException("RESOURCE_NOT_FOUND", "Intent not found", 404);
@@ -253,13 +389,16 @@ public class ConfigService {
         alignTargetKeyIds(config);
         IntentConfigDO dO = toIntentDO(config);
 
+        // 判断是否为默认意图
         boolean isDefault = existing.getIsDefault() != null && existing.getIsDefault() == 1;
         if (isDefault) {
+            // 默认意图更新：级联同步到所有未自定义的意图
             dO.setIsDefault(1);
             dO.setCustomized(0);
             intentMapper.updateById(dO);
             cascadeToNonCustomized(dO.getTargetKeyIds(), dO.getKeyWeights());
         } else {
+            // 普通意图更新：标记为已自定义
             dO.setCustomized(1);
             intentMapper.updateById(dO);
         }
@@ -267,9 +406,15 @@ public class ConfigService {
         return toIntentResponse(intentMapper.selectById(id));
     }
 
+    /**
+     * 删除意图配置（默认意图不允许删除）。
+     *
+     * @param id 意图配置 ID
+     */
     public void deleteIntent(Long id) {
         IntentConfigDO existing = intentMapper.selectById(id);
         if (existing == null) throw new RouterException("RESOURCE_NOT_FOUND", "Intent not found", 404);
+        // 默认意图不允许删除
         if (existing.getIsDefault() != null && existing.getIsDefault() == 1) {
             throw new RouterException("CANNOT_DELETE_DEFAULT", "默认意图路由不允许删除", 400);
         }
@@ -277,6 +422,12 @@ public class ConfigService {
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
     }
 
+    /**
+     * 根据权重 Map 的 Key 对齐目标 Key ID 列表。
+     * 如果有权重配置，则从权重 Map 的 Key 中提取 Key ID 列表。
+     *
+     * @param config 意图配置
+     */
     private void alignTargetKeyIds(IntentConfig config) {
         Map<String, Integer> kw = config.getKeyWeights();
         if (kw != null && !kw.isEmpty()) {
@@ -287,12 +438,21 @@ public class ConfigService {
         }
     }
 
+    /**
+     * 将默认意图的配置级联同步到所有未自定义的意图。
+     * 当默认意图被编辑后，所有未被用户自定义过的意图会继承默认意图的目标 Key 和权重配置。
+     *
+     * @param targetKeyIds 默认意图的目标 Key ID 列表
+     * @param keyWeights   默认意图的权重配置
+     */
     private void cascadeToNonCustomized(List<Long> targetKeyIds, Map<String, Integer> keyWeights) {
+        // 查询所有未自定义的非默认意图
         List<IntentConfigDO> nonCustomized = intentMapper.selectList(
                 new LambdaQueryWrapper<IntentConfigDO>()
                         .eq(IntentConfigDO::getTenantId, TENANT_ID)
                         .eq(IntentConfigDO::getIsDefault, 0)
                         .eq(IntentConfigDO::getCustomized, 0));
+        // 逐个同步配置
         for (IntentConfigDO d : nonCustomized) {
             d.setTargetKeyIds(targetKeyIds);
             d.setKeyWeights(keyWeights);
@@ -300,6 +460,13 @@ public class ConfigService {
         }
     }
 
+    /**
+     * 将意图配置 DO 转换为响应 Map。
+     * 如果配置了目标 Key ID，会查询并附加目标 Key 的摘要信息。
+     *
+     * @param dO 意图配置 DO
+     * @return 响应 Map
+     */
     private Map<String, Object> toIntentResponse(IntentConfigDO dO) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", dO.getId());
@@ -307,6 +474,7 @@ public class ConfigService {
         m.put("name", dO.getName());
         m.put("description", dO.getDescription());
         m.put("target_key_ids", dO.getTargetKeyIds());
+        // 如果配置了目标 Key，查询并附加摘要信息
         if (dO.getTargetKeyIds() != null && !dO.getTargetKeyIds().isEmpty()) {
             List<ApiKeyConfig> keys = keyRepository.findByIds(dO.getTargetKeyIds());
             List<Map<String, Object>> targetKeys = keys.stream().map(k -> {
@@ -327,6 +495,12 @@ public class ConfigService {
         return m;
     }
 
+    /**
+     * 将意图配置域对象转换为 DO。
+     *
+     * @param c 意图配置域对象
+     * @return 意图配置 DO
+     */
     private IntentConfigDO toIntentDO(IntentConfig c) {
         IntentConfigDO dO = new IntentConfigDO();
         dO.setId(c.getId());
@@ -337,7 +511,7 @@ public class ConfigService {
         dO.setTargetKeyIds(c.getTargetKeyIds());
         dO.setKeyWeights(c.getKeyWeights());
         dO.setSortOrder(c.getSortOrder());
-        dO.setEnabled(Boolean.TRUE.equals(c.getEnabled()) ? 1 : 0);
+        dO.setEnabled(Boolean.TRUE.equals(c.getEnabled()) ? 1 : 0); // Boolean 转 Integer
         return dO;
     }
 }

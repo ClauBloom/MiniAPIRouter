@@ -21,16 +21,27 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 数据初始化器。
+ * <p>
+ * 在应用启动时执行数据迁移和初始化操作：
+ * 1. 迁移 intent_config 表结构（添加 is_default 和 customized 列）
+ * 2. 初始化默认意图配置和预设意图
+ * 3. 创建默认路由规则（意图路由和自动路由）
+ * 4. 从首次启动向导数据创建 API Key
+ * 5. 打印启动横幅信息
+ * </p>
+ */
 @Component
 public class DataInitializer implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DataInitializer.class);
-    private static final Long TENANT_ID = 1L;
+    private static final Long TENANT_ID = 1L; // 独立版固定租户 ID
 
-    private final ApiKeyConfigRepository keyRepository;
-    private final RouteRuleRepository ruleRepository;
-    private final IntentConfigMapper intentMapper;
-    private final JdbcTemplate jdbcTemplate;
+    private final ApiKeyConfigRepository keyRepository; // API Key 仓储
+    private final RouteRuleRepository ruleRepository;   // 路由规则仓储
+    private final IntentConfigMapper intentMapper;      // 意图配置 Mapper
+    private final JdbcTemplate jdbcTemplate;            // 用于执行原生 SQL（表结构迁移）
 
     public DataInitializer(ApiKeyConfigRepository keyRepository, RouteRuleRepository ruleRepository,
                            IntentConfigMapper intentMapper, DataSource dataSource) {
@@ -40,27 +51,39 @@ public class DataInitializer implements ApplicationRunner {
         this.jdbcTemplate = new JdbcTemplate(dataSource);
     }
 
+    /**
+     * 应用启动时执行的初始化逻辑。
+     *
+     * @param args 应用启动参数
+     */
     @Override
     public void run(ApplicationArguments args) {
-        migrateIntentSchema();
-        seedIntents();
+        migrateIntentSchema(); // 迁移意图表结构
+        migrateAgentColumns(); // 迁移 Agent 隔离相关列
+        seedIntents();         // 初始化意图数据
 
+        // 检查并创建默认路由规则
         List<RouteRule> existingRules = ruleRepository.findByTenantId(TENANT_ID);
         boolean hasIntentRoute = existingRules.stream()
                 .anyMatch(r -> "Intent Route".equals(r.getRuleName()));
         boolean hasAutoRoute = existingRules.stream()
                 .anyMatch(r -> "Auto Route".equals(r.getRuleName()));
-        if (!hasIntentRoute) createIntentRoute();
-        if (!hasAutoRoute) createAutoRoute();
+        if (!hasIntentRoute) createIntentRoute(); // 创建意图路由规则
+        if (!hasAutoRoute) createAutoRoute();     // 创建自动路由规则
 
+        // 如果首次启动向导有配置数据，则创建对应的 API Key
         if (SetupWizard.hasSetupData()) {
             createKeyFromSetup();
-            SetupWizard.deleteSetupData();
+            SetupWizard.deleteSetupData(); // 使用后删除临时配置文件
         }
 
-        printStartupBanner();
+        printStartupBanner(); // 打印启动横幅
     }
 
+    /**
+     * 迁移 intent_config 表结构。
+     * 检查并添加 is_default 和 customized 列（用于版本兼容性升级）。
+     */
     private void migrateIntentSchema() {
         List<Map<String, Object>> columns = jdbcTemplate.queryForList("PRAGMA table_info(intent_config)");
         boolean hasIsDefault = columns.stream().anyMatch(c -> "is_default".equals(c.get("name")));
@@ -75,10 +98,44 @@ public class DataInitializer implements ApplicationRunner {
         }
     }
 
+    /**
+     * 迁移 Agent 隔离相关列。
+     * 为 model_route_rule 表添加 agent_type 列，为 request_log_meta 表添加 agent_id 和 agent_type 列。
+     */
+    private void migrateAgentColumns() {
+        // model_route_rule 添加 agent_type 列
+        List<Map<String, Object>> ruleCols = jdbcTemplate.queryForList("PRAGMA table_info(model_route_rule)");
+        boolean ruleHasAgentType = ruleCols.stream().anyMatch(c -> "agent_type".equals(c.get("name")));
+        if (!ruleHasAgentType) {
+            jdbcTemplate.execute("ALTER TABLE model_route_rule ADD COLUMN agent_type TEXT");
+            log.info("[Migration] Added agent_type column to model_route_rule");
+        }
+
+        // request_log_meta 添加 agent_id 和 agent_type 列
+        List<Map<String, Object>> logCols = jdbcTemplate.queryForList("PRAGMA table_info(request_log_meta)");
+        boolean logHasAgentId = logCols.stream().anyMatch(c -> "agent_id".equals(c.get("name")));
+        boolean logHasAgentType = logCols.stream().anyMatch(c -> "agent_type".equals(c.get("name")));
+        if (!logHasAgentId) {
+            jdbcTemplate.execute("ALTER TABLE request_log_meta ADD COLUMN agent_id TEXT");
+            log.info("[Migration] Added agent_id column to request_log_meta");
+        }
+        if (!logHasAgentType) {
+            jdbcTemplate.execute("ALTER TABLE request_log_meta ADD COLUMN agent_type TEXT");
+            log.info("[Migration] Added agent_type column to request_log_meta");
+        }
+    }
+
+    /**
+     * 初始化意图配置数据。
+     * 如果没有默认意图，则创建默认意图模板。
+     * 如果只有默认意图，则创建预设的意图配置（推理、聊天、规划等）。
+     */
     private void seedIntents() {
+        // 检查是否已有默认意图
         Long defaultCount = intentMapper.selectCount(
                 new LambdaQueryWrapper<IntentConfigDO>().eq(IntentConfigDO::getIsDefault, 1));
         if (defaultCount == null || defaultCount == 0) {
+            // 创建默认意图模板
             IntentConfigDO dft = new IntentConfigDO();
             dft.setTenantId(TENANT_ID);
             dft.setLabel("default");
@@ -94,6 +151,7 @@ public class DataInitializer implements ApplicationRunner {
             log.info("[Init] Seeded default intent config");
         }
 
+        // 如果只有默认意图，则创建预设意图
         Long count = intentMapper.selectCount(null);
         if (count != null && count > 1) return;
         int order = 1;
@@ -108,6 +166,14 @@ public class DataInitializer implements ApplicationRunner {
         log.info("[Init] Seeded {} intent configs", order - 1);
     }
 
+    /**
+     * 创建单个预设意图配置。
+     *
+     * @param label       意图标签（英文标识）
+     * @param name        意图名称（中文显示名）
+     * @param description 意图描述
+     * @param sortOrder   排序顺序
+     */
     private void seed(String label, String name, String description, int sortOrder) {
         IntentConfigDO dO = new IntentConfigDO();
         dO.setTenantId(TENANT_ID);
@@ -123,6 +189,10 @@ public class DataInitializer implements ApplicationRunner {
         intentMapper.insert(dO);
     }
 
+    /**
+     * 创建意图路由规则。
+     * 按意图路由：意图评估模型分析请求意图，从 intent_config 表读取意图目录与用户配置的模型权重进行路由。
+     */
     private void createIntentRoute() {
         RouteRule rule = new RouteRule();
         rule.setTenantId(TENANT_ID);
@@ -141,6 +211,10 @@ public class DataInitializer implements ApplicationRunner {
         log.info("[Init] Intent route created (intent catalog from intent_config table)");
     }
 
+    /**
+     * 创建自动路由规则。
+     * 自动路由到所有已配置的 API Key，使用加权策略。
+     */
     private void createAutoRoute() {
         RouteRule rule = new RouteRule();
         rule.setTenantId(TENANT_ID);
@@ -158,6 +232,10 @@ public class DataInitializer implements ApplicationRunner {
         log.info("[Init] Auto route created");
     }
 
+    /**
+     * 从首次启动向导的配置数据创建 API Key。
+     * 读取 .setup-wizard.json 文件，解析供应商、API Key、Base URL、模型等信息。
+     */
     private void createKeyFromSetup() {
         try {
             String json = SetupWizard.readSetupData();
@@ -165,16 +243,20 @@ public class DataInitializer implements ApplicationRunner {
 
             var node = JsonUtils.parse(json);
 
+            // 构建 API Key 配置
             ApiKeyConfig config = new ApiKeyConfig();
             config.setTenantId(TENANT_ID);
             config.setName(node.path("provider").asText("deepseek") + " Key");
             config.setProvider(node.path("provider").asText("deepseek"));
+            // 根据供应商判断协议
             config.setProtocol("anthropic".equalsIgnoreCase(config.getProvider()) ? "anthropic" : "openai");
             config.setApiKey(node.path("api_key").asText());
             config.setBaseUrl(node.path("base_url").asText());
+            // 解析模型列表
             List<String> models = new ArrayList<>();
             node.path("models").forEach(m -> models.add(m.asText()));
             config.setModels(models);
+            // 设置默认参数
             config.setWeight(1);
             config.setPriority(0);
             config.setMaxConcurrent(10);
@@ -191,6 +273,11 @@ public class DataInitializer implements ApplicationRunner {
         }
     }
 
+    /**
+     * 打印启动横幅信息。
+     * 显示服务地址、认证 Token、API Key 数量、管理接口和代理接口路径。
+     * 如果没有配置 API Key，则显示添加 API Key 的示例命令。
+     */
     private void printStartupBanner() {
         List<ApiKeyConfig> keys = keyRepository.findByTenantId(TENANT_ID);
         long activeKeys = keys.stream().filter(k -> k.getStatus() != null && k.getStatus() == 1).count();
@@ -210,6 +297,7 @@ public class DataInitializer implements ApplicationRunner {
         System.out.println("  ║  代理接口: /v1/chat/completions           ║");
         System.out.println("  ║            /v1/messages                   ║");
         System.out.println("  ╚══════════════════════════════════════════╝");
+        // 如果没有活跃的 API Key，显示添加示例
         if (activeKeys == 0) {
             System.out.println();
             System.out.println("  ⚠ 尚未配置 API Key。请通过 API 添加:");
@@ -221,6 +309,13 @@ public class DataInitializer implements ApplicationRunner {
         System.out.println();
     }
 
+    /**
+     * 截断字符串到指定长度，超出部分用 "..." 替代。
+     *
+     * @param s   原始字符串
+     * @param max 最大长度
+     * @return 截断后的字符串
+     */
     private String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max - 3) + "...";
