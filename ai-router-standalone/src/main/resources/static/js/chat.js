@@ -30,10 +30,10 @@ const Chat = (() => {
       const models = [];
       const seen = new Set();
       keys.forEach(key => {
-        (key.models || []).forEach(m => {
-          if (!seen.has(m)) {
-            seen.add(m);
-            models.push(m);
+        Object.keys(key.model_mapping || {}).forEach(name => {
+          if (!seen.has(name)) {
+            seen.add(name);
+            models.push(name);
           }
         });
       });

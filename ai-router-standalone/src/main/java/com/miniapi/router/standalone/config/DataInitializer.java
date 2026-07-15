@@ -252,12 +252,14 @@ public class DataInitializer implements ApplicationRunner {
             config.setProtocol("anthropic".equalsIgnoreCase(config.getProvider()) ? "anthropic" : "openai");
             config.setApiKey(node.path("api_key").asText());
             config.setBaseUrl(node.path("base_url").asText());
-            // 解析模型列表
-            List<String> models = new ArrayList<>();
-            node.path("models").forEach(m -> models.add(m.asText()));
-            config.setModels(models);
+            // 解析模型列表，构建模型映射（名称=真实模型名，用户可后续在 UI 修改）
+            Map<String, String> modelMapping = new LinkedHashMap<>();
+            node.path("models").forEach(m -> {
+                String modelName = m.asText();
+                modelMapping.put(modelName, modelName);
+            });
+            config.setModelMapping(modelMapping);
             // 设置默认参数
-            config.setWeight(1);
             config.setPriority(0);
             config.setMaxConcurrent(10);
             config.setTimeoutMs(30000);
@@ -266,8 +268,8 @@ public class DataInitializer implements ApplicationRunner {
             config.setHealthStatus("unknown");
 
             keyRepository.save(config);
-            log.info("[Init] API Key '{}' created from setup wizard (provider={}, models={})",
-                    config.getName(), config.getProvider(), config.getModels());
+            log.info("[Init] API Key '{}' created from setup wizard (provider={}, model_mapping={})",
+                    config.getName(), config.getProvider(), config.getModelMapping());
         } catch (Exception e) {
             log.warn("[Init] Failed to create key from setup data: {}", e.getMessage());
         }
@@ -304,7 +306,7 @@ public class DataInitializer implements ApplicationRunner {
             System.out.println("    curl -X POST http://localhost:" + port + "/api/v1/config/api-keys \\");
             System.out.println("      -H 'Authorization: Bearer " + authToken + "' \\");
             System.out.println("      -H 'Content-Type: application/json' \\");
-            System.out.println("      -d '{\"name\":\"My Key\",\"provider\":\"deepseek\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://api.deepseek.com\",\"models\":[\"deepseek-v4-flash\"]}'");
+            System.out.println("      -d '{\"name\":\"My Key\",\"provider\":\"deepseek\",\"api_key\":\"sk-xxx\",\"base_url\":\"https://api.deepseek.com\",\"model_mapping\":{\"deepseek\":\"deepseek-v4-flash\"}}'");
         }
         System.out.println();
     }

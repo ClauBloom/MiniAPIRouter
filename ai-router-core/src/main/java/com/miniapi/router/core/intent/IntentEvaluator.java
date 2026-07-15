@@ -168,7 +168,11 @@ public class IntentEvaluator {
                                         String systemPrompt, String userPrompt,
                                         List<ApiKeyConfig> candidates) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", intentModel);
+        String realModel = intentModel;
+        if (evalKey.getModelMapping() != null && evalKey.getModelMapping().containsKey(intentModel)) {
+            realModel = evalKey.getModelMapping().get(intentModel);
+        }
+        body.put("model", realModel);
         body.put("messages", List.of(
                 Map.of("role", "system", "content", systemPrompt),
                 Map.of("role", "user", "content", userPrompt)
@@ -203,12 +207,14 @@ public class IntentEvaluator {
 
     /**
      * 从候选列表中查找支持指定意图评估模型的 API Key。
-     * 遍历候选列表，返回第一个模型列表包含目标模型的 Key。
+     * 遍历候选列表，返回第一个已启用且模型映射中包含目标名称的 Key。
      */
     public ApiKeyConfig findEvalKey(List<ApiKeyConfig> candidates, String intentModel) {
         if (candidates == null || intentModel == null) return null;
         for (ApiKeyConfig key : candidates) {
-            if (key.getModels() != null && key.getModels().contains(intentModel)) {
+            if (!key.isEnabled()) continue;
+            Map<String, String> mm = key.getModelMapping();
+            if (mm != null && mm.containsKey(intentModel)) {
                 return key;
             }
         }
@@ -308,8 +314,7 @@ public class IntentEvaluator {
         copy.setApiKey(original.getApiKey());
         copy.setApiKeyEnc(original.getApiKeyEnc());
         copy.setBaseUrl(original.getBaseUrl());
-        copy.setModels(original.getModels());
-        copy.setWeight(original.getWeight());
+        copy.setModelMapping(original.getModelMapping());
         copy.setPriority(original.getPriority());
         copy.setMaxConcurrent(original.getMaxConcurrent());
         copy.setQpsLimit(original.getQpsLimit());

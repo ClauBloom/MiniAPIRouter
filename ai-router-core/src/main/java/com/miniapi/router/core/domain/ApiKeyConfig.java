@@ -2,13 +2,13 @@ package com.miniapi.router.core.domain;
 
 import lombok.Data;
 import java.time.LocalDateTime;
-import java.util.List;
+import java.util.Map;
 
 /**
  * 上游 API Key 配置领域对象。
  * <p>
  * 记录一个上游 AI 服务提供商的 API 密钥及其路由相关的配置，
- * 包括服务商名称、协议类型、支持的模型列表、权重、优先级、限流等参数。
+ * 包括服务商名称、协议类型、模型映射、优先级、限流等参数。
  * </p>
  */
 @Data
@@ -38,11 +38,14 @@ public class ApiKeyConfig {
     /** 上游服务基础 URL */
     private String baseUrl;
 
-    /** 该 Key 支持的模型列表 */
-    private List<String> models;
-
-    /** 路由权重，数值越大被选中概率越高 */
-    private Integer weight;
+    /**
+     * 模型映射：名称 -> 真实模型名。
+     * <p>
+     * 名称是对外暴露给用户的模型标识（小写字母、数字、-、.），
+     * 真实模型名是发送给上游 API 的实际模型名称。
+     * </p>
+     */
+    private Map<String, String> modelMapping;
 
     /** 路由优先级，数值越小优先级越高 */
     private Integer priority;

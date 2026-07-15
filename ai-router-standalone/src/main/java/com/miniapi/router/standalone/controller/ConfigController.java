@@ -231,4 +231,17 @@ public class ConfigController {
         configService.deleteIntent(id);
         return ApiResponse.success();
     }
+
+    /**
+     * 重置意图配置为跟随默认模板。
+     * 将 customized 置为 0，同步默认意图的目标 Key 和权重配置。
+     *
+     * @param id 意图配置 ID
+     * @return 空成功响应
+     */
+    @PatchMapping("/intents/{id}/reset-to-default")
+    public ApiResponse<Object> resetIntentToDefault(@PathVariable Long id) {
+        configService.resetIntentToDefault(id);
+        return ApiResponse.success();
+    }
 }

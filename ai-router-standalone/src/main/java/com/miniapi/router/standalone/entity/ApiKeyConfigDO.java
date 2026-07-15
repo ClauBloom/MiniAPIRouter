@@ -4,14 +4,14 @@ import com.baomidou.mybatisplus.annotation.*;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 import java.time.LocalDateTime;
-import java.util.List;
+import java.util.Map;
 
 /**
  * API Key 配置数据对象（DO）。
  * <p>
  * 对应数据库 api_key_config 表，存储上游 AI 服务的 API Key 配置信息。
- * 包括供应商、协议、密钥（加密存储）、基础 URL、支持的模型列表、
- * 权重、优先级、并发限制、超时设置、重试次数、状态和健康状态等。
+ * 包括供应商、协议、密钥（加密存储）、基础 URL、模型映射、
+ * 优先级、并发限制、超时设置、重试次数、状态和健康状态等。
  * </p>
  */
 @Data
@@ -25,9 +25,8 @@ public class ApiKeyConfigDO {
     private String protocol;            // 通信协议（openai/anthropic）
     private String apiKeyEnc;           // 加密后的 API Key
     private String baseUrl;             // 上游服务基础 URL
-    @TableField(typeHandler = JacksonTypeHandler.class)
-    private List<String> models;        // 支持的模型列表，以 JSON 存储
-    private Integer weight;             // 权重（用于加权路由策略）
+    @TableField(value = "models", typeHandler = JacksonTypeHandler.class)
+    private Object modelMapping;   // 模型映射 JSON（兼容旧格式数组和新格式对象）
     private Integer priority;           // 优先级（数字越小优先级越高）
     private Integer maxConcurrent;      // 最大并发数
     private Integer qpsLimit;           // QPS 限制

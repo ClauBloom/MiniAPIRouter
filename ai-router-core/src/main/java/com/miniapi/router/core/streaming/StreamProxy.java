@@ -322,16 +322,15 @@ public class StreamProxy {
 
     /**
      * 确定向上游发送的实际模型名称。
-     * 若 Key 的 models 包含入站模型则原样使用，否则使用 Key 的第一个模型。
+     * 若入站模型不在映射表中，自动从映射表中选取第一个真实模型名。
      */
     private static String resolveEffectiveModel(ApiKeyConfig key, String inboundModel) {
-        if (key.getModels() == null || key.getModels().isEmpty()) {
+        Map<String, String> mm = key.getModelMapping();
+        if (mm == null || mm.isEmpty()) {
             return inboundModel;
         }
-        if (inboundModel != null && key.getModels().contains(inboundModel)) {
-            return inboundModel;
-        }
-        return key.getModels().get(0);
+        String real = mm.get(inboundModel);
+        return real != null ? real : mm.values().iterator().next();
     }
 
     /** 将 SSE 字符串写入 OutputStream 并立即刷新 */

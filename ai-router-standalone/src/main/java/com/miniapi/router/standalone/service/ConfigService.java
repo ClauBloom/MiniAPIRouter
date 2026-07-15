@@ -67,7 +67,6 @@ public class ConfigService {
         config.setTenantId(TENANT_ID);
         // 设置默认值
         if (config.getStatus() == null) config.setStatus(1);
-        if (config.getWeight() == null) config.setWeight(1);
         if (config.getPriority() == null) config.setPriority(0);
         if (config.getMaxConcurrent() == null) config.setMaxConcurrent(10);
         if (config.getTimeoutMs() == null) config.setTimeoutMs(30000);
@@ -163,8 +162,7 @@ public class ConfigService {
         m.put("provider", c.getProvider());
         m.put("protocol", c.getProtocol());
         m.put("base_url", c.getBaseUrl());
-        m.put("models", c.getModels());
-        m.put("weight", c.getWeight());
+        m.put("model_mapping", c.getModelMapping());
         m.put("priority", c.getPriority());
         m.put("max_concurrent", c.getMaxConcurrent());
         m.put("qps_limit", c.getQpsLimit());
@@ -302,7 +300,6 @@ public class ConfigService {
                 tk.put("id", k.getId());
                 tk.put("name", k.getName());
                 tk.put("provider", k.getProvider());
-                tk.put("weight", k.getWeight());
                 return tk;
             }).collect(Collectors.toList());
             m.put("target_keys", targetKeys);
@@ -423,6 +420,30 @@ public class ConfigService {
     }
 
     /**
+     * 重置意图配置为跟随默认。
+     * 将 customized 设为 0，并同步默认意图的 targetKeyIds 和 keyWeights。
+     *
+     * @param id 意图配置 ID
+     */
+    public void resetIntentToDefault(Long id) {
+        IntentConfigDO existing = intentMapper.selectById(id);
+        if (existing == null) throw new RouterException("RESOURCE_NOT_FOUND", "Intent not found", 404);
+        if (existing.getIsDefault() != null && existing.getIsDefault() == 1) {
+            throw new RouterException("CANNOT_RESET_DEFAULT", "默认意图路由不允许此操作", 400);
+        }
+        IntentConfigDO dft = intentMapper.selectOne(
+                new LambdaQueryWrapper<IntentConfigDO>()
+                        .eq(IntentConfigDO::getTenantId, TENANT_ID)
+                        .eq(IntentConfigDO::getIsDefault, 1));
+        if (dft == null) throw new RouterException("NO_DEFAULT_INTENT", "默认意图路由不存在", 500);
+        existing.setTargetKeyIds(dft.getTargetKeyIds());
+        existing.setKeyWeights(dft.getKeyWeights());
+        existing.setCustomized(0);
+        intentMapper.updateById(existing);
+        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+    }
+
+    /**
      * 根据权重 Map 的 Key 对齐目标 Key ID 列表。
      * 如果有权重配置，则从权重 Map 的 Key 中提取 Key ID 列表。
      *
@@ -482,7 +503,6 @@ public class ConfigService {
                 tk.put("id", k.getId());
                 tk.put("name", k.getName());
                 tk.put("provider", k.getProvider());
-                tk.put("weight", k.getWeight());
                 return tk;
             }).collect(Collectors.toList());
             m.put("target_keys", targetKeys);

@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
  * API Key 配置服务
  * <p>
  * 提供上游 AI 提供商的 API Key 配置管理功能，包括创建、查询、更新、删除和健康检查。
- * 每个配置代表一个上游提供商的 API Key，包含提供商信息、协议类型、权重、优先级、并发限制等参数。
+ * 每个配置代表一个上游提供商的 API Key，包含提供商信息、协议类型、优先级、并发限制等参数。
  * </p>
  * <p>
  * 所有操作都基于当前租户上下文，确保数据隔离。
@@ -58,8 +58,7 @@ public class ApiKeyConfigService {
         config.setProtocol(req.getProtocol() != null ? req.getProtocol() : inferProtocol(req.getProvider()));
         config.setApiKey(req.getApiKey());
         config.setBaseUrl(req.getBaseUrl());
-        config.setModels(req.getModels());
-        config.setWeight(req.getWeight());
+        config.setModelMapping(req.getModelMapping());
         config.setPriority(req.getPriority());
         config.setMaxConcurrent(req.getMaxConcurrent());
         config.setQpsLimit(req.getQpsLimit());
@@ -124,8 +123,7 @@ public class ApiKeyConfigService {
         if (req.getProtocol() != null) config.setProtocol(req.getProtocol());
         if (req.getApiKey() != null) config.setApiKey(req.getApiKey());
         if (req.getBaseUrl() != null) config.setBaseUrl(req.getBaseUrl());
-        if (req.getModels() != null) config.setModels(req.getModels());
-        if (req.getWeight() != null) config.setWeight(req.getWeight());
+        if (req.getModelMapping() != null) config.setModelMapping(req.getModelMapping());
         if (req.getPriority() != null) config.setPriority(req.getPriority());
         if (req.getMaxConcurrent() != null) config.setMaxConcurrent(req.getMaxConcurrent());
         if (req.getQpsLimit() != null) config.setQpsLimit(req.getQpsLimit());
@@ -199,8 +197,7 @@ public class ApiKeyConfigService {
         m.put("provider", c.getProvider());
         m.put("protocol", c.getProtocol());
         m.put("base_url", c.getBaseUrl());
-        m.put("models", c.getModels());
-        m.put("weight", c.getWeight());
+        m.put("model_mapping", c.getModelMapping());
         m.put("priority", c.getPriority());
         m.put("max_concurrent", c.getMaxConcurrent());
         m.put("qps_limit", c.getQpsLimit());
@@ -226,12 +223,26 @@ public class ApiKeyConfigService {
         m.put("provider", dO.getProvider());
         m.put("protocol", dO.getProtocol());
         m.put("base_url", dO.getBaseUrl());
-        m.put("models", dO.getModels());
-        m.put("weight", dO.getWeight());
+        m.put("model_mapping", convertModelMapping(dO.getModelMapping()));
         m.put("priority", dO.getPriority());
         m.put("status", dO.getStatus());
         m.put("health_status", dO.getHealthStatus());
         m.put("created_at", dO.getCreatedAt());
         return m;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> convertModelMapping(Object raw) {
+        if (raw == null) return null;
+        if (raw instanceof Map) return (Map<String, String>) raw;
+        if (raw instanceof List) {
+            Map<String, String> mapping = new LinkedHashMap<>();
+            for (Object item : (List<?>) raw) {
+                String s = String.valueOf(item);
+                mapping.put(s, s);
+            }
+            return mapping;
+        }
+        return null;
     }
 }

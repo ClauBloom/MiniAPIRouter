@@ -52,8 +52,7 @@ CREATE TABLE IF NOT EXISTS api_key_config (
     protocol VARCHAR(16) NOT NULL DEFAULT 'openai',
     api_key_enc VARCHAR(512) NOT NULL,
     base_url VARCHAR(512) NOT NULL,
-    models JSON NOT NULL,
-    weight INT NOT NULL DEFAULT 1,
+    models JSON NOT NULL, -- 模型映射（名称->真实模型名）
     priority INT NOT NULL DEFAULT 0,
     max_concurrent INT NOT NULL DEFAULT 10,
     qps_limit INT NOT NULL DEFAULT 0,

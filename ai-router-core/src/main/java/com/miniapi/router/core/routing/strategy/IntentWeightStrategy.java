@@ -8,9 +8,8 @@ import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 意图加权路由策略：基于意图分析结果提供的权重映射表进行加权随机选择。
- * 与 WeightStrategy 的区别在于：权重来自意图评估时动态生成的 weightMap，
- * 而非 ApiKeyConfig 自身的静态配置权重。
- * 若 weightMap 中没有某 Key 的权重，则回退使用 ApiKeyConfig.getWeight()。
+ * 权重来自意图评估时动态生成的 weightMap，
+ * 若 weightMap 中没有某 Key 的权重，则默认使用 1。
  */
 public class IntentWeightStrategy implements RouteStrategy {
 
@@ -30,7 +29,7 @@ public class IntentWeightStrategy implements RouteStrategy {
         int totalWeight = 0;
         for (int i = 0; i < candidates.size(); i++) {
             ApiKeyConfig c = candidates.get(i);
-            int w = weightMap.getOrDefault(c.getId(), c.getWeight() != null ? c.getWeight() : 1);
+            int w = weightMap.getOrDefault(c.getId(), 1);
             w = Math.max(1, w); // 确保权重至少为 1
             weights[i] = w;
             totalWeight += w;

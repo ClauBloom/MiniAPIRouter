@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -36,8 +37,9 @@ public class SessionRouteMemory {
     public void recordSuccess(String sessionKey, ApiKeyConfig key, String intent, int score) {
         Entry entry = memory.computeIfAbsent(sessionKey, k -> new Entry());
         entry.selectedKeyId = key.getId();
-        entry.selectedKeyModel = key.getModels() != null && !key.getModels().isEmpty()
-                ? key.getModels().get(0) : null;
+        Map<String, String> mm = key.getModelMapping();
+        entry.selectedKeyModel = mm != null && !mm.isEmpty()
+                ? mm.keySet().iterator().next() : null;
         entry.intent = intent;
         entry.score = score;
         entry.lastAccessTime = System.currentTimeMillis();

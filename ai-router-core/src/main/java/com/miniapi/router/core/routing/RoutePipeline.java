@@ -98,11 +98,13 @@ public class RoutePipeline {
         } else {
             allKeys = apiKeyConfigRepository.findByIds(matched.getTargetKeyIds());
         }
-        /* 3. 过滤：只保留已启用、健康、支持请求模型的 Key */
+        /* 3. 过滤：模型名在数据库中存在时走精确匹配，不存在时全部 Key 为候选（走意图路由） */
+        boolean modelKnown = model != null && !model.isEmpty()
+                && allKeys.stream().anyMatch(k -> k.getModelMapping() != null && k.getModelMapping().containsKey(model));
         List<ApiKeyConfig> candidates = allKeys.stream()
                 .filter(ApiKeyConfig::isEnabled)
                 .filter(k -> !"down".equalsIgnoreCase(k.getHealthStatus()))
-                .filter(k -> supportsModel(k, model))
+                .filter(k -> !modelKnown || supportsModel(k, model))
                 .collect(Collectors.toList());
 
         if (candidates.isEmpty()) {
@@ -257,7 +259,7 @@ public class RoutePipeline {
         return sorted.get(0);
     }
 
-    /** 获取 Key 的有效权重：优先使用意图权重映射表中的值，否则使用 Key 自身配置的权重 */
+    /** 获取 Key 的有效权重：优先使用意图权重映射表中的值，否则默认使用 1 */
     private int getEffectiveWeight(ApiKeyConfig k, Map<String, Integer> keyWeights) {
         if (keyWeights != null && keyWeights.containsKey(String.valueOf(k.getId()))) {
             Integer w = keyWeights.get(String.valueOf(k.getId()));
@@ -265,8 +267,7 @@ public class RoutePipeline {
                 return w;
             }
         }
-        Integer kw = k.getWeight();
-        return kw != null && kw > 0 ? kw : 1;
+        return 1;
     }
 
     /** 构建路由结果对象，包含选中的 Key、匹配规则、回退链等 */
@@ -417,16 +418,16 @@ public class RoutePipeline {
 
     /**
      * 判断指定 Key 是否支持请求的模型。
-     * 若 Key 未配置模型列表，则支持所有模型；若模型为 "auto"，也视为匹配。
+     * 若 Key 未配置模型映射，则支持所有模型；若模型为空，也视为匹配。
      */
     private boolean supportsModel(ApiKeyConfig key, String model) {
-        if (key.getModels() == null || key.getModels().isEmpty()) {
+        Map<String, String> mm = key.getModelMapping();
+        if (mm == null || mm.isEmpty()) {
             return true;
         }
-        if (model == null || model.isEmpty() || "auto".equalsIgnoreCase(model)) {
+        if (model == null || model.isEmpty()) {
             return true;
         }
-        return key.getModels().stream()
-                .anyMatch(m -> matchGlob(m, model));
+        return mm.containsKey(model);
     }
 }

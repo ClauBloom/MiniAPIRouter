@@ -1,13 +1,13 @@
 package com.miniapi.router.saas.dto.request;
 
 import lombok.Data;
-import java.util.List;
+import java.util.Map;
 
 /**
  * API Key 配置请求 DTO。
- * 
+ *
  * <p>用于创建或更新上游 API Key 配置时的请求参数封装。
- * 包含 API Key 的基本信息、路由权重、并发限制、超时设置等配置项。
+ * 包含 API Key 的基本信息、模型映射、优先级、并发限制、超时设置等配置项。
  */
 @Data
 public class ApiKeyConfigRequest {
@@ -16,8 +16,7 @@ public class ApiKeyConfigRequest {
     private String protocol;      // 协议类型（如 openai、anthropic）
     private String apiKey;        // 上游 API Key 明文，入库前会进行加密存储
     private String baseUrl;       // 上游服务的基础 URL
-    private List<String> models;  // 该 Key 支持的模型列表
-    private Integer weight = 1;       // 权重，用于加权路由策略中分配请求比例
+    private Map<String, String> modelMapping; // 模型映射：名称 -> 真实模型名
     private Integer priority = 0;     // 优先级，数值越大优先被选择
     private Integer maxConcurrent = 10; // 最大并发请求数限制
     private Integer qpsLimit = 0;     // 每秒请求限制（0表示不限制）

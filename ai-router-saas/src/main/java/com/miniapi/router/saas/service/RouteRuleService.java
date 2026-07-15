@@ -173,7 +173,6 @@ public class RouteRuleService {
                 tk.put("id", k.getId());
                 tk.put("name", k.getName());
                 tk.put("provider", k.getProvider());
-                tk.put("weight", k.getWeight());
                 return tk;
             }).collect(Collectors.toList());
             m.put("target_keys", targetKeys);

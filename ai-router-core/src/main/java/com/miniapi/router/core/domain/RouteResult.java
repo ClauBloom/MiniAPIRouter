@@ -3,6 +3,7 @@ package com.miniapi.router.core.domain;
 import lombok.Data;
 import lombok.Builder;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 路由结果领域对象。
@@ -42,21 +43,19 @@ public class RouteResult {
     /**
      * 解析实际请求上游时应使用的模型名称。
      * <p>
-     * 如果上游 Key 支持的模型列表包含入站模型，则直接使用入站模型；
-     * 否则返回上游 Key 支持的第一个模型作为回退。若无上游 Key 或模型列表为空，
-     * 直接返回入站模型。
+     * 根据选中 Key 的模型映射表，将入站模型名（名称）翻译为真实模型名。
+     * 若入站模型不在映射表中，自动从映射表中选取第一个真实模型名。
      * </p>
      *
-     * @param inboundModel 入站请求指定的模型名
-     * @return 实际向上游转发的模型名
+     * @param inboundModel 入站请求指定的模型名（名称）
+     * @return 实际向上游转发的模型名（真实模型名）
      */
     public String resolveUpstreamModel(String inboundModel) {
-        if (selectedKey == null || selectedKey.getModels() == null || selectedKey.getModels().isEmpty()) {
+        if (selectedKey == null || selectedKey.getModelMapping() == null || selectedKey.getModelMapping().isEmpty()) {
             return inboundModel;
         }
-        if (inboundModel != null && selectedKey.getModels().contains(inboundModel)) {
-            return inboundModel;
-        }
-        return selectedKey.getModels().get(0);
+        Map<String, String> mm = selectedKey.getModelMapping();
+        String real = mm.get(inboundModel);
+        return real != null ? real : mm.values().iterator().next();
     }
 }

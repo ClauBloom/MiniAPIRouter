@@ -70,36 +70,68 @@ public class OpenAIRequestConverter implements RequestConverter {
         if (request.getTopP() != null) body.put("top_p", request.getTopP());
         if (request.getTools() != null) body.put("tools", request.getTools());
         body.put("stream", Boolean.TRUE.equals(request.getStream()));
-        // 合并额外参数
+        // 合并额外参数（客户端可传 thinking 等参数）
         if (request.getExtraParams() != null) body.putAll(request.getExtraParams());
         return body;
     }
 
     /**
-     * 为对话历史中缺少 reasoning_content 的 assistant 消息注入缓存的推理内容。
-     * 当模型切换时，推理内容可能丢失，通过缓存恢复以保持推理链的连续性。
+     * 确保对话历史中 reasoning_content 的完整性，避免 DeepSeek 等推理模型报错。
+     * <p>
+     * 策略：若部分 assistant 消息有 reasoning_content 而部分没有，则尝试从缓存补齐。
+     * 缓存无法补齐时，清理全部 reasoning_content 以中断要求回传的链路。
+     * </p>
      *
      * @param messages 原始消息列表
-     * @return 注入推理内容后的消息列表
+     * @return 处理后的消息列表
      */
     private List<Map<String, Object>> injectReasoningContent(List<Map<String, Object>> messages) {
         if (messages == null) return null;
-        List<Map<String, Object>> result = new ArrayList<>();
+
+        boolean anyHas = false;
+        boolean anyMissing = false;
         for (Map<String, Object> msg : messages) {
-            // 只为 assistant 消息且缺少 reasoning_content 的注入
+            if ("assistant".equals(msg.get("role"))) {
+                if (msg.containsKey("reasoning_content")) anyHas = true;
+                else anyMissing = true;
+            }
+        }
+        if (!anyHas) return messages;       // 无 reasoning_content，无需处理
+        if (!anyMissing) return messages;    // 全部齐备，无需处理
+
+        // 有缺失：尝试从缓存补齐
+        List<Map<String, Object>> result = new ArrayList<>();
+        boolean allFilled = true;
+        for (Map<String, Object> msg : messages) {
             if ("assistant".equals(msg.get("role")) && !msg.containsKey("reasoning_content")) {
                 Object contentObj = msg.get("content");
                 String contentKey = contentObj instanceof String s ? s : null;
                 String reasoning = reasoningCache.lookup(contentKey);
                 if (reasoning != null) {
-                    Map<String, Object> msgCopy = new LinkedHashMap<>(msg);
-                    msgCopy.put("reasoning_content", reasoning);
-                    result.add(msgCopy);
-                    continue;
+                    Map<String, Object> enriched = new LinkedHashMap<>(msg);
+                    enriched.put("reasoning_content", reasoning);
+                    result.add(enriched);
+                } else {
+                    allFilled = false;
+                    result.add(msg);
                 }
+            } else {
+                result.add(msg);
             }
-            result.add(msg);
         }
-        return result;
+        if (allFilled) return result;
+
+        // 缓存无法补齐：清理全部 reasoning_content 以中断要求回传链路
+        List<Map<String, Object>> cleaned = new ArrayList<>();
+        for (Map<String, Object> msg : result) {
+            if ("assistant".equals(msg.get("role")) && msg.containsKey("reasoning_content")) {
+                Map<String, Object> stripped = new LinkedHashMap<>(msg);
+                stripped.remove("reasoning_content");
+                cleaned.add(stripped);
+            } else {
+                cleaned.add(msg);
+            }
+        }
+        return cleaned;
     }
 }

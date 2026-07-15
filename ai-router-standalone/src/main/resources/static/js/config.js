@@ -58,7 +58,7 @@ const Config = (() => {
         <div class="key-info">
           <div class="key-name">${escapeHtml(k.name)}</div>
           <div class="key-meta">
-            ${escapeHtml(k.provider)} · ${escapeHtml(k.protocol)} · ${escapeHtml((k.models||[]).join(', '))}
+            ${escapeHtml(k.provider)} · ${escapeHtml(k.protocol)} · ${Object.entries(k.model_mapping || {}).map(([n, r]) => n === r ? escapeHtml(n) : `${escapeHtml(n)}→${escapeHtml(r)}`).join(', ')}
             <br>${escapeHtml(k.base_url)} · Key: ${escapeHtml(k.api_key_masked)}
           </div>
         </div>
@@ -105,6 +105,29 @@ const Config = (() => {
     }).join('');
   }
 
+  function makeModelRow(name, real) {
+    return `<div class="form-row model-mapping-row" style="gap:8px;align-items:center">
+      <input class="model-name-input" value="${escapeHtml(name)}" placeholder="名称" style="flex:1" pattern="[a-z0-9.-]+">
+      <span class="text-muted">→</span>
+      <input class="model-real-input" value="${escapeHtml(real)}" placeholder="真实模型名" style="flex:2">
+      <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
+    </div>`;
+  }
+
+  function addModelRow() {
+    const container = document.getElementById('key-model-mapping');
+    const row = document.createElement('div');
+    row.className = 'form-row model-mapping-row';
+    row.style.cssText = 'gap:8px;align-items:center';
+    row.innerHTML = `
+      <input class="model-name-input" value="" placeholder="名称" style="flex:1" pattern="[a-z0-9.-]+">
+      <span class="text-muted">→</span>
+      <input class="model-real-input" value="" placeholder="真实模型名" style="flex:2">
+      <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
+    `;
+    container.appendChild(row);
+  }
+
   function showKeyModal(id) {
     const key = id ? keys.find(k => k.id === id) : null;
     const overlay = document.getElementById('modal-overlay');
@@ -144,14 +167,12 @@ const Config = (() => {
           <input id="key-baseurl" value="${key ? escapeHtml(key.base_url) : 'https://api.deepseek.com'}" placeholder="https://api.deepseek.com">
         </div>
         <div class="form-group">
-          <label>支持的模型 (逗号分隔)</label>
-          <input id="key-models" value="${key ? (key.models||[]).join(', ') : 'deepseek-v4-flash'}">
+          <label>模型映射 <span class="text-muted">(名称 -> 真实模型名)</span></label>
+          <div id="key-model-mapping">${key && key.model_mapping ? Object.entries(key.model_mapping).map(([n, r]) => makeModelRow(n, r)).join('') : makeModelRow('', '')}</div>
+          <button class="btn btn-sm" onclick="Config.addModelRow()">+ 添加模型映射</button>
+          <div class="form-hint">名称 = 对外暴露的模型标识，支持小写字母、数字、-、.　真实模型名 = 发送给上游 API 的实际模型名</div>
         </div>
         <div class="form-row">
-          <div class="form-group">
-            <label>权重</label>
-            <input id="key-weight" type="number" value="${key ? key.weight : 1}" min="0">
-          </div>
           <div class="form-group">
             <label>优先级</label>
             <input id="key-priority" type="number" value="${key ? key.priority : 0}" min="0">
@@ -171,14 +192,18 @@ const Config = (() => {
   }
 
   async function saveKey(id) {
-    const modelsStr = document.getElementById('key-models').value;
+    const modelMapping = {};
+    document.querySelectorAll('#key-model-mapping .model-mapping-row').forEach(row => {
+      const name = row.querySelector('.model-name-input').value.trim();
+      const real = row.querySelector('.model-real-input').value.trim();
+      if (name && real) modelMapping[name] = real;
+    });
     const body = {
       name: document.getElementById('key-name').value,
       provider: document.getElementById('key-provider').value,
       protocol: document.getElementById('key-protocol').value,
       base_url: document.getElementById('key-baseurl').value,
-      models: modelsStr.split(',').map(s => s.trim()).filter(Boolean),
-      weight: parseInt(document.getElementById('key-weight').value) || 1,
+      model_mapping: modelMapping,
       priority: parseInt(document.getElementById('key-priority').value) || 0,
       timeout_ms: parseInt(document.getElementById('key-timeout').value) || 30000,
     };
@@ -230,7 +255,7 @@ const Config = (() => {
       `<option value="${k.id}" ${rule && (rule.target_key_ids||[]).includes(k.id) ? 'selected' : ''}>${escapeHtml(k.name)}</option>`
     ).join('');
 
-    const allModels = [...new Set(keys.flatMap(k => k.models || []))];
+    const allModels = [...new Set(keys.flatMap(k => Object.keys(k.model_mapping || {})))];
     const intentModelOptions = allModels.map(m =>
       `<option value="${escapeHtml(m)}" ${rule && rule.intent_model === m ? 'selected' : ''}>${escapeHtml(m)}</option>`
     ).join('');
@@ -390,6 +415,7 @@ const Config = (() => {
             ? '<span class="badge badge-orange ml-8">已自定义</span>'
             : '<span class="badge badge-gray ml-8">继承默认</span>');
       const deleteBtn = isDefault ? '' : `<button class="btn btn-sm btn-danger" onclick="Config.deleteIntent(${i.id})">删除</button>`;
+      const resetBtn = i.customized ? `<button class="btn btn-sm" onclick="Config.resetIntentToDefault(${i.id})">跟随默认</button>` : '';
       return `
         <div class="${itemClass}">
           <div class="rule-header">
@@ -400,6 +426,7 @@ const Config = (() => {
             </div>
             <div class="flex gap-8">
               <button class="btn btn-sm" onclick="Config.showIntentModal(${i.id})">编辑</button>
+              ${resetBtn}
               ${deleteBtn}
             </div>
           </div>
@@ -416,13 +443,8 @@ const Config = (() => {
   function showIntentModal(id) {
     const intent = id ? intents.find(i => i.id === id) : null;
     const overlay = document.getElementById('modal-overlay');
-    const keyOptions = keys.map(k =>
-      `<option value="${k.id}" ${intent && (intent.target_key_ids||[]).includes(k.id) ? 'selected' : ''}>${escapeHtml(k.name)} (${escapeHtml(k.provider)})</option>`
-    ).join('');
-    const weightsRows = keys.map(k => {
-      const w = intent && intent.key_weights ? (intent.key_weights[k.id] || '') : '';
-      return `<div class="form-row"><label class="flex-1">#${k.id} ${escapeHtml(k.name)}</label><input class="intent-weight-input" data-key-id="${k.id}" type="number" min="0" max="100" value="${w}" placeholder="留空=继承模型评分" style="width:140px"></div>`;
-    }).join('');
+    const selectedIds = intent ? (intent.target_key_ids || []) : [];
+    const keyWeights = intent ? (intent.key_weights || {}) : {};
 
     overlay.querySelector('.modal').innerHTML = `
       <div class="modal-header">
@@ -446,12 +468,9 @@ const Config = (() => {
           <input id="intent-description" value="${intent ? escapeHtml(intent.description||'') : ''}" placeholder="逻辑分析、数学计算、复杂推理">
         </div>
         <div class="form-group">
-          <label>目标 Key (不选则继承 Auto Route 使用全部)</label>
-          <select id="intent-target-keys" multiple style="min-height:80px">${keyOptions}</select>
-        </div>
-        <div class="form-group">
-          <label>模型权重 (0-100，留空=继承意图评估模型评分)</label>
-          ${weightsRows}
+          <label>目标模型 (权重 0-100，留空=继承意图评估模型评分)</label>
+          <div id="intent-target-list"></div>
+          <div id="intent-add-container" style="margin-top:8px"></div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -473,10 +492,68 @@ const Config = (() => {
       </div>
     `;
     overlay.classList.add('active');
+
+    intentTargetKeys = [...selectedIds];
+    renderIntentTargetList(keyWeights);
+  }
+
+  let intentTargetKeys = [];
+
+  function renderIntentTargetList(keyWeights) {
+    const container = document.getElementById('intent-target-list');
+    if (!container) return;
+    if (intentTargetKeys.length === 0) {
+      container.innerHTML = '<div class="text-muted" style="padding:8px 0">未选择目标模型，将继承 Auto Route 使用全部</div>';
+    } else {
+      container.innerHTML = intentTargetKeys.map(kid => {
+        const k = keys.find(x => x.id === kid);
+        if (!k) return '';
+        const modelNames = Object.keys(k.model_mapping || {}).join(', ') || '-';
+        const w = keyWeights[kid] || '';
+        return `<div class="form-row intent-target-row" data-key-id="${kid}" style="gap:8px;align-items:center">
+          <div style="flex:2;min-width:0">
+            <div class="text-sm">${escapeHtml(k.name)}</div>
+            <div class="text-muted text-sm">${escapeHtml(k.provider)} · ${escapeHtml(modelNames)}</div>
+          </div>
+          <input class="intent-weight-input" data-key-id="${kid}" type="number" min="0" max="100" value="${w}" placeholder="留空" style="width:100px">
+          <button class="btn btn-sm btn-danger" onclick="Config.removeIntentTarget(${kid})">✕</button>
+        </div>`;
+      }).join('');
+    }
+    renderIntentAddContainer();
+  }
+
+  function renderIntentAddContainer() {
+    const container = document.getElementById('intent-add-container');
+    if (!container) return;
+    const available = keys.filter(k => !intentTargetKeys.includes(k.id));
+    if (available.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+    container.innerHTML = `<select id="intent-add-select" style="width:auto;display:inline-block">
+      ${available.map(k => `<option value="${k.id}">${escapeHtml(k.name)} (${escapeHtml(k.provider)})</option>`).join('')}
+    </select>
+    <button class="btn btn-sm" onclick="Config.addIntentTarget()">+ 添加</button>`;
+  }
+
+  function addIntentTarget() {
+    const sel = document.getElementById('intent-add-select');
+    if (!sel) return;
+    const kid = parseInt(sel.value);
+    if (kid && !intentTargetKeys.includes(kid)) {
+      intentTargetKeys.push(kid);
+      renderIntentTargetList({});
+    }
+  }
+
+  function removeIntentTarget(kid) {
+    intentTargetKeys = intentTargetKeys.filter(id => id !== kid);
+    renderIntentTargetList({});
   }
 
   async function saveIntent(id) {
-    const targetKeys = Array.from(document.getElementById('intent-target-keys').selectedOptions).map(o => parseInt(o.value));
+    const targetKeys = [...intentTargetKeys];
     const keyWeights = {};
     document.querySelectorAll('.intent-weight-input').forEach(input => {
       const v = input.value.trim();
@@ -519,11 +596,22 @@ const Config = (() => {
     }
   }
 
+  async function resetIntentToDefault(id) {
+    if (!confirm('确定重置为跟随默认?')) return;
+    try {
+      await API.patch('/api/v1/config/intents/' + id + '/reset-to-default', {});
+      showToast('已重置为跟随默认');
+      await loadIntents();
+    } catch (e) {
+      showToast('操作失败: ' + e.message, 'error');
+    }
+  }
+
   function closeModal() {
     document.getElementById('modal-overlay').classList.remove('active');
   }
 
   return { init, load, loadKeys, loadRules, loadIntents, showKeyModal, saveKey, deleteKey, toggleKey,
            showRuleModal, saveRule, deleteRule, toggleRule, showIntentModal, saveIntent, deleteIntent,
-           closeModal, onMatchTypeChange };
+           resetIntentToDefault, addModelRow, addIntentTarget, removeIntentTarget, closeModal, onMatchTypeChange };
 })();

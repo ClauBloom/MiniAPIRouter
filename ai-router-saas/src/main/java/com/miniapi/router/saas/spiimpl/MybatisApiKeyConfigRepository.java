@@ -10,7 +10,9 @@ import com.miniapi.router.saas.mapper.ApiKeyConfigMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -87,7 +89,9 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
     @Override
     public List<ApiKeyConfig> findByTenantId(Long tenantId) {
         List<ApiKeyConfigDO> list = mapper.selectList(
-                new LambdaQueryWrapper<ApiKeyConfigDO>().eq(ApiKeyConfigDO::getTenantId, tenantId));
+                new LambdaQueryWrapper<ApiKeyConfigDO>()
+                        .eq(ApiKeyConfigDO::getTenantId, tenantId)
+                        .eq(ApiKeyConfigDO::getStatus, 1));
         return list.stream().map(this::toDomain).collect(Collectors.toList());
     }
 
@@ -117,7 +121,10 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         }
         // 批量查询未命中的 ID 并回填缓存
         if (!missedIds.isEmpty()) {
-            List<ApiKeyConfigDO> dbList = mapper.selectBatchIds(missedIds);
+            List<ApiKeyConfigDO> dbList = mapper.selectList(
+                    new LambdaQueryWrapper<ApiKeyConfigDO>()
+                            .in(ApiKeyConfigDO::getId, missedIds)
+                            .eq(ApiKeyConfigDO::getStatus, 1));
             for (ApiKeyConfigDO dO : dbList) {
                 ApiKeyConfig config = toDomain(dO);
                 redis.opsForValue().set(CACHE_PREFIX + dO.getId(), JsonUtils.toJson(config),
@@ -125,7 +132,7 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
                 result.add(config);
             }
         }
-        return result;
+        return result.stream().filter(ApiKeyConfig::isEnabled).collect(Collectors.toList());
     }
 
     /**
@@ -241,8 +248,7 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         // 解密 API Key
         c.setApiKey(cryptoUtils.decrypt(dO.getApiKeyEnc()));
         c.setBaseUrl(dO.getBaseUrl());
-        c.setModels(dO.getModels());
-        c.setWeight(dO.getWeight());
+        c.setModelMapping(convertModelMapping(dO.getModelMapping()));
         c.setPriority(dO.getPriority());
         c.setMaxConcurrent(dO.getMaxConcurrent());
         c.setQpsLimit(dO.getQpsLimit());
@@ -271,8 +277,7 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setProtocol(c.getProtocol());
         dO.setApiKeyEnc(c.getApiKeyEnc());
         dO.setBaseUrl(c.getBaseUrl());
-        dO.setModels(c.getModels());
-        dO.setWeight(c.getWeight());
+        dO.setModelMapping(c.getModelMapping());
         dO.setPriority(c.getPriority());
         dO.setMaxConcurrent(c.getMaxConcurrent());
         dO.setQpsLimit(c.getQpsLimit());
@@ -282,5 +287,26 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setHealthStatus(c.getHealthStatus());
         dO.setLastHealthCheckAt(c.getLastHealthCheckAt());
         return dO;
+    }
+
+    /**
+     * 将 DO 中的原始模型数据转换为 Map<String, String>。
+     * 兼容旧格式（JSON 数组 ["a","b"]）和新格式（JSON 对象 {"a":"x","b":"y"}）。
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, String> convertModelMapping(Object raw) {
+        if (raw == null) return null;
+        if (raw instanceof Map) {
+            return (Map<String, String>) raw;
+        }
+        if (raw instanceof List) {
+            Map<String, String> mapping = new LinkedHashMap<>();
+            for (Object item : (List<?>) raw) {
+                String s = String.valueOf(item);
+                mapping.put(s, s);
+            }
+            return mapping;
+        }
+        return null;
     }
 }
