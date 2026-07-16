@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS intent_config (
     description TEXT,
     target_key_ids TEXT NOT NULL DEFAULT '[]',
     key_weights TEXT NOT NULL DEFAULT '{}',
+    target_models TEXT NOT NULL DEFAULT '[]',
+    model_weights TEXT NOT NULL DEFAULT '{}',
     sort_order INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     is_default INTEGER NOT NULL DEFAULT 0,
@@ -94,3 +96,15 @@ CREATE TABLE IF NOT EXISTS intent_config (
 );
 
 CREATE INDEX IF NOT EXISTS idx_intent_tenant ON intent_config(tenant_id, deleted, enabled);
+
+CREATE TABLE IF NOT EXISTS model_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL DEFAULT 1,
+    display_name TEXT NOT NULL,
+    real_name TEXT NOT NULL,
+    api_key_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(tenant_id, display_name)
+);
+CREATE INDEX IF NOT EXISTS idx_model_apikey ON model_config(api_key_id);

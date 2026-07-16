@@ -135,7 +135,9 @@ public class StandaloneProxyService {
             // 确定上游协议
             String upstreamProtocol = selectedKey.getProtocol() != null ? selectedKey.getProtocol() : "openai";
             unifiedReq.setUpstreamProtocol(upstreamProtocol);
-            unifiedReq.setModel(routeResult.resolveUpstreamModel(model));
+            String upstreamModel = routeResult.getSelectedModel() != null
+                    ? routeResult.getSelectedModel() : routeResult.resolveUpstreamModel(model);
+            unifiedReq.setModel(upstreamModel);
 
             // 构建上游请求
             String upstreamPath = getUpstreamPath(upstreamProtocol);
@@ -279,7 +281,9 @@ public class StandaloneProxyService {
             // 确定上游协议
             String upstreamProtocol = selectedKey.getProtocol() != null ? selectedKey.getProtocol() : "openai";
             unifiedReq.setUpstreamProtocol(upstreamProtocol);
-            unifiedReq.setModel(routeResult.resolveUpstreamModel(model));
+            String upstreamModel = routeResult.getSelectedModel() != null
+                    ? routeResult.getSelectedModel() : routeResult.resolveUpstreamModel(model);
+            unifiedReq.setModel(upstreamModel);
 
             // 构建上游请求
             String upstreamPath = getUpstreamPath(upstreamProtocol);

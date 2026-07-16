@@ -2,7 +2,9 @@ package com.miniapi.router.saas.spiimpl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.miniapi.router.core.domain.ApiKeyConfig;
+import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
+import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.util.CryptoUtils;
 import com.miniapi.router.core.util.JsonUtils;
 import com.miniapi.router.saas.entity.ApiKeyConfigDO;
@@ -35,12 +37,15 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
     private final ApiKeyConfigMapper mapper;       // MyBatis-Plus Mapper
     private final CryptoUtils cryptoUtils;          // 加密工具类
     private final StringRedisTemplate redis;        // Redis 模板
+    private final ModelConfigRepository modelConfigRepository;
 
     public MybatisApiKeyConfigRepository(ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils,
-                                         StringRedisTemplate redis) {
+                                         StringRedisTemplate redis,
+                                         ModelConfigRepository modelConfigRepository) {
         this.mapper = mapper;
         this.cryptoUtils = cryptoUtils;
         this.redis = redis;
+        this.modelConfigRepository = modelConfigRepository;
     }
 
     /**
@@ -248,7 +253,7 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         // 解密 API Key
         c.setApiKey(cryptoUtils.decrypt(dO.getApiKeyEnc()));
         c.setBaseUrl(dO.getBaseUrl());
-        c.setModelMapping(convertModelMapping(dO.getModelMapping()));
+        c.setModelMapping(loadModelMapping(dO.getId()));
         c.setPriority(dO.getPriority());
         c.setMaxConcurrent(dO.getMaxConcurrent());
         c.setQpsLimit(dO.getQpsLimit());
@@ -277,7 +282,6 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setProtocol(c.getProtocol());
         dO.setApiKeyEnc(c.getApiKeyEnc());
         dO.setBaseUrl(c.getBaseUrl());
-        dO.setModelMapping(c.getModelMapping());
         dO.setPriority(c.getPriority());
         dO.setMaxConcurrent(c.getMaxConcurrent());
         dO.setQpsLimit(c.getQpsLimit());
@@ -287,6 +291,22 @@ public class MybatisApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setHealthStatus(c.getHealthStatus());
         dO.setLastHealthCheckAt(c.getLastHealthCheckAt());
         return dO;
+    }
+
+    /**
+     * 从 model_config 表加载模型映射。
+     * 如果 model_config 表无数据（迁移前），返回 null。
+     */
+    private Map<String, String> loadModelMapping(Long keyId) {
+        List<ModelConfig> models = modelConfigRepository.findByApiKeyId(keyId);
+        if (models != null && !models.isEmpty()) {
+            Map<String, String> mapping = new LinkedHashMap<>();
+            for (ModelConfig m : models) {
+                mapping.put(m.getDisplayName(), m.getRealName());
+            }
+            return mapping;
+        }
+        return null;
     }
 
     /**

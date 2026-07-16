@@ -1,8 +1,11 @@
 package com.miniapi.router.standalone.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.miniapi.router.core.domain.ApiKeyConfig;
+import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.domain.RouteRule;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
+import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.spi.RouteRuleRepository;
 import com.miniapi.router.core.util.JsonUtils;
 import com.miniapi.router.standalone.entity.IntentConfigDO;
@@ -41,13 +44,16 @@ public class DataInitializer implements ApplicationRunner {
     private final ApiKeyConfigRepository keyRepository; // API Key 仓储
     private final RouteRuleRepository ruleRepository;   // 路由规则仓储
     private final IntentConfigMapper intentMapper;      // 意图配置 Mapper
+    private final ModelConfigRepository modelConfigRepository; // 模型配置仓储
     private final JdbcTemplate jdbcTemplate;            // 用于执行原生 SQL（表结构迁移）
 
     public DataInitializer(ApiKeyConfigRepository keyRepository, RouteRuleRepository ruleRepository,
-                           IntentConfigMapper intentMapper, DataSource dataSource) {
+                           IntentConfigMapper intentMapper, ModelConfigRepository modelConfigRepository,
+                           DataSource dataSource) {
         this.keyRepository = keyRepository;
         this.ruleRepository = ruleRepository;
         this.intentMapper = intentMapper;
+        this.modelConfigRepository = modelConfigRepository;
         this.jdbcTemplate = new JdbcTemplate(dataSource);
     }
 
@@ -59,6 +65,10 @@ public class DataInitializer implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         migrateIntentSchema(); // 迁移意图表结构
+        migrateModelConfigTable();
+        migrateIntentModelColumns();
+        migrateModelsToModelConfig();
+        migrateIntentKeyToModel();
         migrateAgentColumns(); // 迁移 Agent 隔离相关列
         seedIntents();         // 初始化意图数据
 
@@ -96,6 +106,161 @@ public class DataInitializer implements ApplicationRunner {
             jdbcTemplate.execute("ALTER TABLE intent_config ADD COLUMN customized INTEGER NOT NULL DEFAULT 0");
             log.info("[Migration] Added customized column to intent_config");
         }
+    }
+
+    /**
+     * 创建 model_config 表（如果不存在）。
+     */
+    private void migrateModelConfigTable() {
+        jdbcTemplate.execute("""
+            CREATE TABLE IF NOT EXISTS model_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL DEFAULT 1,
+                display_name TEXT NOT NULL,
+                real_name TEXT NOT NULL,
+                api_key_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(tenant_id, display_name)
+            )
+            """);
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_model_apikey ON model_config(api_key_id)");
+        log.info("[Migration] model_config table ready");
+    }
+
+    /**
+     * 迁移 intent_config 表：添加 target_models 和 model_weights 列。
+     */
+    private void migrateIntentModelColumns() {
+        List<Map<String, Object>> columns = jdbcTemplate.queryForList("PRAGMA table_info(intent_config)");
+        boolean hasTargetModels = columns.stream().anyMatch(c -> "target_models".equals(c.get("name")));
+        boolean hasModelWeights = columns.stream().anyMatch(c -> "model_weights".equals(c.get("name")));
+        if (!hasTargetModels) {
+            jdbcTemplate.execute("ALTER TABLE intent_config ADD COLUMN target_models TEXT NOT NULL DEFAULT '[]'");
+            log.info("[Migration] Added target_models column to intent_config");
+        }
+        if (!hasModelWeights) {
+            jdbcTemplate.execute("ALTER TABLE intent_config ADD COLUMN model_weights TEXT NOT NULL DEFAULT '{}'");
+            log.info("[Migration] Added model_weights column to intent_config");
+        }
+    }
+
+    /**
+     * 将 api_key_config.models JSON 列中的模型数据迁移到 model_config 表。
+     * 幂等：跳过已存在的模型名。
+     */
+    @SuppressWarnings("unchecked")
+    private void migrateModelsToModelConfig() {
+        // 检查 model_config 是否已有数据（已迁移过则跳过）
+        Long existingCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM model_config", Long.class);
+        if (existingCount != null && existingCount > 0) {
+            log.info("[Migration] model_config already has {} rows, skipping model migration", existingCount);
+            return;
+        }
+
+        List<Map<String, Object>> keys = jdbcTemplate.queryForList(
+                "SELECT id, tenant_id, models FROM api_key_config WHERE deleted = 0");
+        int migrated = 0;
+        int skipped = 0;
+        for (Map<String, Object> keyRow : keys) {
+            Long keyId = ((Number) keyRow.get("id")).longValue();
+            Long tenantId = ((Number) keyRow.get("tenant_id")).longValue();
+            String modelsJson = (String) keyRow.get("models");
+            if (modelsJson == null || modelsJson.isBlank()) continue;
+
+            try {
+                JsonNode node = JsonUtils.parse(modelsJson);
+                if (node.isObject()) {
+                    // 新格式：{"name": "realName", ...}
+                    var fields = node.fields();
+                    while (fields.hasNext()) {
+                        var entry = fields.next();
+                        String displayName = entry.getKey();
+                        String realName = entry.getValue().asText(displayName);
+                        if (tryInsertModel(tenantId, displayName, realName, keyId)) {
+                            migrated++;
+                        } else {
+                            skipped++;
+                            log.warn("[Migration] Skipped duplicate model '{}' for key_id={}", displayName, keyId);
+                        }
+                    }
+                } else if (node.isArray()) {
+                    // 旧格式：["name1", "name2"]
+                    for (JsonNode item : node) {
+                        String name = item.asText();
+                        if (tryInsertModel(tenantId, name, name, keyId)) {
+                            migrated++;
+                        } else {
+                            skipped++;
+                            log.warn("[Migration] Skipped duplicate model '{}' for key_id={}", name, keyId);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[Migration] Failed to parse models JSON for key_id={}: {}", keyId, e.getMessage());
+            }
+        }
+        log.info("[Migration] Migrated {} models to model_config ({} skipped due to duplicates)", migrated, skipped);
+    }
+
+    /**
+     * 尝试插入一条模型记录，遇到唯一约束冲突时返回 false。
+     */
+    private boolean tryInsertModel(Long tenantId, String displayName, String realName, Long apiKeyId) {
+        try {
+            ModelConfig mc = new ModelConfig();
+            mc.setTenantId(tenantId);
+            mc.setDisplayName(displayName);
+            mc.setRealName(realName);
+            mc.setApiKeyId(apiKeyId);
+            modelConfigRepository.save(mc);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 将 intent_config 的 target_key_ids / key_weights 迁移为 target_models / model_weights。
+     * 通过 model_config 表反查 Key ID -> 模型名。
+     * 幂等：target_models 已有值则跳过。
+     */
+    @SuppressWarnings("unchecked")
+    private void migrateIntentKeyToModel() {
+        List<IntentConfigDO> allIntents = intentMapper.selectList(null);
+        for (IntentConfigDO intent : allIntents) {
+            // 已迁移过则跳过
+            if (intent.getTargetModels() != null && !intent.getTargetModels().isEmpty()) continue;
+
+            List<Long> targetKeyIds = intent.getTargetKeyIds();
+            Map<String, Integer> keyWeights = intent.getKeyWeights();
+            if (targetKeyIds == null || targetKeyIds.isEmpty()) {
+                intent.setTargetModels(List.of());
+                intent.setModelWeights(new LinkedHashMap<>());
+            } else {
+                List<String> targetModels = new ArrayList<>();
+                Map<String, Integer> modelWeights = new LinkedHashMap<>();
+                for (Long keyId : targetKeyIds) {
+                    List<ModelConfig> models = modelConfigRepository.findByApiKeyId(keyId);
+                    if (models.isEmpty()) continue;
+                    // 取该 Key 下第一个模型名
+                    String firstModel = models.get(0).getDisplayName();
+                    targetModels.add(firstModel);
+                    // 迁移权重
+                    if (keyWeights != null) {
+                        Integer w = keyWeights.get(String.valueOf(keyId));
+                        if (w != null) {
+                            modelWeights.put(firstModel, w);
+                        }
+                    }
+                }
+                intent.setTargetModels(targetModels);
+                intent.setModelWeights(modelWeights);
+            }
+            intentMapper.updateById(intent);
+        }
+        log.info("[Migration] Migrated intent_config target_key_ids -> target_models");
     }
 
     /**
@@ -143,6 +308,8 @@ public class DataInitializer implements ApplicationRunner {
             dft.setDescription("作为其他意图的默认模板，编辑后会同步到未自定义的意图");
             dft.setTargetKeyIds(List.of());
             dft.setKeyWeights(new LinkedHashMap<>());
+            dft.setTargetModels(List.of());
+            dft.setModelWeights(new LinkedHashMap<>());
             dft.setSortOrder(0);
             dft.setEnabled(1);
             dft.setIsDefault(1);
@@ -182,6 +349,8 @@ public class DataInitializer implements ApplicationRunner {
         dO.setDescription(description);
         dO.setTargetKeyIds(List.of());
         dO.setKeyWeights(new LinkedHashMap<>());
+        dO.setTargetModels(List.of());
+        dO.setModelWeights(new LinkedHashMap<>());
         dO.setSortOrder(sortOrder);
         dO.setEnabled(1);
         dO.setIsDefault(0);
@@ -268,6 +437,17 @@ public class DataInitializer implements ApplicationRunner {
             config.setHealthStatus("unknown");
 
             keyRepository.save(config);
+            // 将模型写入 model_config 表
+            if (config.getModelMapping() != null && !config.getModelMapping().isEmpty()) {
+                for (Map.Entry<String, String> entry : config.getModelMapping().entrySet()) {
+                    ModelConfig mc = new ModelConfig();
+                    mc.setTenantId(TENANT_ID);
+                    mc.setDisplayName(entry.getKey());
+                    mc.setRealName(entry.getValue());
+                    mc.setApiKeyId(config.getId());
+                    modelConfigRepository.save(mc);
+                }
+            }
             log.info("[Init] API Key '{}' created from setup wizard (provider={}, model_mapping={})",
                     config.getName(), config.getProvider(), config.getModelMapping());
         } catch (Exception e) {

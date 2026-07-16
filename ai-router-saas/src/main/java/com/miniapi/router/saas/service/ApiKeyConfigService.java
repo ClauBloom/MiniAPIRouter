@@ -3,8 +3,10 @@ package com.miniapi.router.saas.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.miniapi.router.core.domain.ApiKeyConfig;
+import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.exception.RouterException;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
+import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.util.CryptoUtils;
 import com.miniapi.router.core.util.TraceUtils;
 import com.miniapi.router.saas.context.TenantContext;
@@ -35,11 +37,14 @@ public class ApiKeyConfigService {
     private final ApiKeyConfigRepository keyRepository;  // API Key 配置仓库（SPI 层），支持缓存
     private final ApiKeyConfigMapper mapper;              // MyBatis-Plus Mapper，用于分页查询
     private final CryptoUtils cryptoUtils;                // 加密工具类，用于脱敏显示
+    private final ModelConfigRepository modelConfigRepository;
 
-    public ApiKeyConfigService(ApiKeyConfigRepository keyRepository, ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils) {
+    public ApiKeyConfigService(ApiKeyConfigRepository keyRepository, ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils,
+                               ModelConfigRepository modelConfigRepository) {
         this.keyRepository = keyRepository;
         this.mapper = mapper;
         this.cryptoUtils = cryptoUtils;
+        this.modelConfigRepository = modelConfigRepository;
     }
 
     /**
@@ -67,6 +72,7 @@ public class ApiKeyConfigService {
         config.setStatus(1);
         config.setHealthStatus("unknown");
         keyRepository.save(config);
+        syncModelConfigs(config.getId(), tenantId, config.getModelMapping());
         return toResponse(config);
     }
 
@@ -130,6 +136,7 @@ public class ApiKeyConfigService {
         if (req.getTimeoutMs() != null) config.setTimeoutMs(req.getTimeoutMs());
         if (req.getRetryCount() != null) config.setRetryCount(req.getRetryCount());
         keyRepository.update(config);
+        syncModelConfigs(id, tenantId, config.getModelMapping());
         return toResponse(keyRepository.findById(id));
     }
 
@@ -140,6 +147,7 @@ public class ApiKeyConfigService {
      */
     public void delete(Long id) {
         Long tenantId = TenantContext.getTenantId();
+        modelConfigRepository.deleteByApiKeyId(id);
         keyRepository.delete(id, tenantId);
     }
 
@@ -172,6 +180,35 @@ public class ApiKeyConfigService {
         result.put("health_status", config.getHealthStatus() != null ? config.getHealthStatus() : "unknown");
         result.put("last_check_at", java.time.LocalDateTime.now());
         return result;
+    }
+
+    /**
+     * 将 Key 的 modelMapping 同步到 model_config 表。
+     * 先删除该 Key 下的所有旧模型，再逐条插入新模型。
+     * 校验对外模型名在租户内唯一。
+     *
+     * @param keyId        API Key ID
+     * @param tenantId     租户 ID
+     * @param modelMapping 模型映射（对外名 -> 真实名）
+     */
+    private void syncModelConfigs(Long keyId, Long tenantId, Map<String, String> modelMapping) {
+        modelConfigRepository.deleteByApiKeyId(keyId);
+        if (modelMapping == null || modelMapping.isEmpty()) return;
+        for (Map.Entry<String, String> entry : modelMapping.entrySet()) {
+            String displayName = entry.getKey();
+            // 唯一性校验：检查租户内是否已有其他 Key 使用此模型名
+            ModelConfig existing = modelConfigRepository.findByDisplayName(tenantId, displayName);
+            if (existing != null && !existing.getApiKeyId().equals(keyId)) {
+                throw new RouterException("MODEL_NAME_DUPLICATE",
+                        "对外模型名 '" + displayName + "' 已被其他 Key 使用", 409);
+            }
+            ModelConfig mc = new ModelConfig();
+            mc.setTenantId(tenantId);
+            mc.setDisplayName(displayName);
+            mc.setRealName(entry.getValue());
+            mc.setApiKeyId(keyId);
+            modelConfigRepository.save(mc);
+        }
     }
 
     /**

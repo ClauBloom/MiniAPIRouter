@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.miniapi.router.core.domain.ApiKeyConfig;
+import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
+import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.util.CryptoUtils;
 import com.miniapi.router.core.util.JsonUtils;
 import com.miniapi.router.standalone.entity.ApiKeyConfigDO;
@@ -32,11 +34,14 @@ public class SqliteApiKeyConfigRepository implements ApiKeyConfigRepository {
 
     private final ApiKeyConfigMapper mapper;       // MyBatis-Plus Mapper
     private final CryptoUtils cryptoUtils;         // 加密工具
+    private final ModelConfigRepository modelConfigRepository;
     private final Cache<Long, ApiKeyConfig> cache; // Key ID -> 配置的缓存
 
-    public SqliteApiKeyConfigRepository(ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils) {
+    public SqliteApiKeyConfigRepository(ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils,
+                                        ModelConfigRepository modelConfigRepository) {
         this.mapper = mapper;
         this.cryptoUtils = cryptoUtils;
+        this.modelConfigRepository = modelConfigRepository;
         this.cache = Caffeine.newBuilder()
                 .expireAfterWrite(CACHE_TTL_MINUTES, TimeUnit.MINUTES)
                 .maximumSize(200)
@@ -215,7 +220,7 @@ public class SqliteApiKeyConfigRepository implements ApiKeyConfigRepository {
         c.setApiKeyEnc(dO.getApiKeyEnc());
         c.setApiKey(cryptoUtils.decrypt(dO.getApiKeyEnc())); // 解密 API Key
         c.setBaseUrl(dO.getBaseUrl());
-        c.setModelMapping(convertModelMapping(dO.getModelMapping()));
+        c.setModelMapping(loadModelMapping(dO.getId(), dO.getTenantId()));
         c.setPriority(dO.getPriority());
         c.setMaxConcurrent(dO.getMaxConcurrent());
         c.setQpsLimit(dO.getQpsLimit());
@@ -244,7 +249,7 @@ public class SqliteApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setProtocol(c.getProtocol());
         dO.setApiKeyEnc(c.getApiKeyEnc());
         dO.setBaseUrl(c.getBaseUrl());
-        dO.setModelMapping(c.getModelMapping());
+        // 模型映射不再写入 models 列，由 model_config 表管理（ConfigService 负责）
         dO.setPriority(c.getPriority());
         dO.setMaxConcurrent(c.getMaxConcurrent());
         dO.setQpsLimit(c.getQpsLimit());
@@ -254,6 +259,23 @@ public class SqliteApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setHealthStatus(c.getHealthStatus());
         dO.setLastHealthCheckAt(c.getLastHealthCheckAt());
         return dO;
+    }
+
+    /**
+     * 从 model_config 表加载模型映射。
+     * 如果 model_config 表无数据（迁移前），回退到 DO 的 models JSON 列。
+     */
+    private Map<String, String> loadModelMapping(Long keyId, Long tenantId) {
+        List<ModelConfig> models = modelConfigRepository.findByApiKeyId(keyId);
+        if (models != null && !models.isEmpty()) {
+            Map<String, String> mapping = new LinkedHashMap<>();
+            for (ModelConfig m : models) {
+                mapping.put(m.getDisplayName(), m.getRealName());
+            }
+            return mapping;
+        }
+        // 回退：迁移前从 models JSON 列读取
+        return null;
     }
 
     /**

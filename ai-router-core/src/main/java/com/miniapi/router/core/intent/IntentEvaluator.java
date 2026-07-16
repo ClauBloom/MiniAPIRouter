@@ -5,7 +5,9 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.miniapi.router.core.domain.ApiKeyConfig;
 import com.miniapi.router.core.domain.IntentConfig;
+import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.spi.IntentCatalogProvider;
+import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.streaming.UpstreamStreamClient;
 import com.miniapi.router.core.util.JsonUtils;
 import org.slf4j.Logger;
@@ -46,12 +48,16 @@ public class IntentEvaluator {
     private final PromptTemplate promptTemplate;
     /** 意图目录提供者，获取租户配置的意图分类列表 */
     private final IntentCatalogProvider catalogProvider;
+    /** 模型配置仓储，用于按模型名查找所属 Key 和真实模型名 */
+    private final ModelConfigRepository modelConfigRepository;
 
     public IntentEvaluator(UpstreamStreamClient upstreamClient, PromptTemplate promptTemplate,
-                           IntentCatalogProvider catalogProvider) {
+                           IntentCatalogProvider catalogProvider,
+                           ModelConfigRepository modelConfigRepository) {
         this.upstreamClient = upstreamClient;
         this.promptTemplate = promptTemplate;
         this.catalogProvider = catalogProvider;
+        this.modelConfigRepository = modelConfigRepository;
     }
 
     /** 特殊意图集合：无效继续指令、追问/不满意，需要走降级/兜底逻辑 */
@@ -169,8 +175,9 @@ public class IntentEvaluator {
                                         List<ApiKeyConfig> candidates) {
         Map<String, Object> body = new LinkedHashMap<>();
         String realModel = intentModel;
-        if (evalKey.getModelMapping() != null && evalKey.getModelMapping().containsKey(intentModel)) {
-            realModel = evalKey.getModelMapping().get(intentModel);
+        ModelConfig mc = modelConfigRepository.findByDisplayName(evalKey.getTenantId(), intentModel);
+        if (mc != null) {
+            realModel = mc.getRealName();
         }
         body.put("model", realModel);
         body.put("messages", List.of(
@@ -207,14 +214,16 @@ public class IntentEvaluator {
 
     /**
      * 从候选列表中查找支持指定意图评估模型的 API Key。
-     * 遍历候选列表，返回第一个已启用且模型映射中包含目标名称的 Key。
+     * 通过 ModelConfigRepository 按模型名查找所属 Key。
      */
     public ApiKeyConfig findEvalKey(List<ApiKeyConfig> candidates, String intentModel) {
-        if (candidates == null || intentModel == null) return null;
+        if (candidates == null || candidates.isEmpty() || intentModel == null) return null;
+        Long tenantId = candidates.get(0).getTenantId();
+        ModelConfig mc = modelConfigRepository.findByDisplayName(tenantId, intentModel);
+        if (mc == null) return null;
         for (ApiKeyConfig key : candidates) {
             if (!key.isEnabled()) continue;
-            Map<String, String> mm = key.getModelMapping();
-            if (mm != null && mm.containsKey(intentModel)) {
+            if (key.getId().equals(mc.getApiKeyId())) {
                 return key;
             }
         }
