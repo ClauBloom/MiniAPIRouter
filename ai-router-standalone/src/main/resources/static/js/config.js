@@ -403,9 +403,9 @@ const Config = (() => {
       return;
     }
     container.innerHTML = intents.map(i => {
-      const targetNames = (i.target_keys || []).map(t => escapeHtml(t.name)).join(', ');
-      const weightsStr = i.key_weights && Object.keys(i.key_weights).length > 0
-        ? Object.entries(i.key_weights).map(([kId, w]) => `#${kId}:${w}`).join(', ')
+      const targetModelNames = (i.target_models || []).join(', ');
+      const weightsStr = i.model_weights && Object.keys(i.model_weights).length > 0
+        ? Object.entries(i.model_weights).map(([m, w]) => `${m}:${w}`).join(', ')
         : '<span class="text-muted">继承模型评分</span>';
       const isDefault = i.is_default;
       const itemClass = isDefault ? 'rule-item intent-default' : 'rule-item';
@@ -432,7 +432,7 @@ const Config = (() => {
           </div>
           <div class="rule-meta">
             ${escapeHtml(i.description || '')}
-            <br>目标 Key: ${targetNames || '<span class="text-muted">自动使用全部（继承 Auto）</span>'}
+            <br>目标模型: ${targetModelNames || '<span class="text-muted">自动使用全部（继承 Auto）</span>'}
             <br>模型权重: ${weightsStr}
           </div>
         </div>
@@ -443,8 +443,8 @@ const Config = (() => {
   function showIntentModal(id) {
     const intent = id ? intents.find(i => i.id === id) : null;
     const overlay = document.getElementById('modal-overlay');
-    const selectedIds = intent ? (intent.target_key_ids || []) : [];
-    const keyWeights = intent ? (intent.key_weights || {}) : {};
+    const selectedModels = intent ? (intent.target_models || []) : [];
+    const modelWeights = intent ? (intent.model_weights || {}) : {};
 
     overlay.querySelector('.modal').innerHTML = `
       <div class="modal-header">
@@ -493,46 +493,63 @@ const Config = (() => {
     `;
     overlay.classList.add('active');
 
-    intentTargetKeys = [...selectedIds];
-    renderIntentTargetList(keyWeights);
+    intentTargetModels = [...selectedModels];
+    renderIntentTargetList(modelWeights);
   }
 
-  let intentTargetKeys = [];
+  let intentTargetModels = [];
+  let intentModelWeights = {};
 
-  function renderIntentTargetList(keyWeights) {
+  function renderIntentTargetList(modelWeights) {
+    intentModelWeights = modelWeights;
     const container = document.getElementById('intent-target-list');
     if (!container) return;
-    if (intentTargetKeys.length === 0) {
+    if (intentTargetModels.length === 0) {
       container.innerHTML = '<div class="text-muted" style="padding:8px 0">未选择目标模型，将继承 Auto Route 使用全部</div>';
     } else {
-      container.innerHTML = intentTargetKeys.map(kid => {
-        const k = keys.find(x => x.id === kid);
-        if (!k) return '';
-        const modelNames = Object.keys(k.model_mapping || {}).join(', ') || '-';
-        const w = keyWeights[kid] || '';
-        return `<div class="form-row intent-target-row" data-key-id="${kid}" style="gap:8px;align-items:center">
+      container.innerHTML = intentTargetModels.map(modelName => {
+        const k = findKeyForModel(modelName);
+        const w = modelWeights[modelName] || '';
+        const keyLabel = k ? `${escapeHtml(k.name)} (${escapeHtml(k.provider)})` : '<span class="text-muted">未找到所属 Key</span>';
+        return `<div class="form-row intent-target-row" data-model-name="${escapeHtml(modelName)}" style="gap:8px;align-items:center">
           <div style="flex:2;min-width:0">
-            <div class="text-sm">${escapeHtml(k.name)}</div>
-            <div class="text-muted text-sm">${escapeHtml(k.provider)} · ${escapeHtml(modelNames)}</div>
+            <div class="text-sm">${escapeHtml(modelName)}</div>
+            <div class="text-muted text-sm">${keyLabel}</div>
           </div>
-          <input class="intent-weight-input" data-key-id="${kid}" type="number" min="0" max="100" value="${w}" placeholder="留空" style="width:100px">
-          <button class="btn btn-sm btn-danger" onclick="Config.removeIntentTarget(${kid})">✕</button>
+          <input class="intent-weight-input" data-model-name="${escapeHtml(modelName)}" type="number" min="0" max="100" value="${w}" placeholder="留空" style="width:100px">
+          <button class="btn btn-sm btn-danger" onclick="Config.removeIntentTarget('${escapeHtml(modelName)}')">✕</button>
         </div>`;
       }).join('');
     }
     renderIntentAddContainer();
   }
 
+  /** 通过 model_mapping 反查模型所属的 Key（前端缓存） */
+  function findKeyForModel(modelName) {
+    return keys.find(k => {
+      const mm = k.model_mapping || {};
+      return Object.keys(mm).includes(modelName);
+    });
+  }
+
   function renderIntentAddContainer() {
     const container = document.getElementById('intent-add-container');
     if (!container) return;
-    const available = keys.filter(k => !intentTargetKeys.includes(k.id));
-    if (available.length === 0) {
+    // 收集所有 Key 中的模型名，排除已选
+    const allModels = [];
+    keys.forEach(k => {
+      Object.keys(k.model_mapping || {}).forEach(name => {
+        if (!intentTargetModels.includes(name)) {
+          allModels.push({ name, keyName: k.name, provider: k.provider });
+        }
+      });
+    });
+    if (allModels.length === 0) {
       container.innerHTML = '';
       return;
     }
     container.innerHTML = `<select id="intent-add-select" style="width:auto;display:inline-block">
-      ${available.map(k => `<option value="${k.id}">${escapeHtml(k.name)} (${escapeHtml(k.provider)})</option>`).join('')}
+      ${allModels.map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} (${escapeHtml(m.keyName)})</option>`).join('')}
     </select>
     <button class="btn btn-sm" onclick="Config.addIntentTarget()">+ 添加</button>`;
   }
@@ -540,31 +557,31 @@ const Config = (() => {
   function addIntentTarget() {
     const sel = document.getElementById('intent-add-select');
     if (!sel) return;
-    const kid = parseInt(sel.value);
-    if (kid && !intentTargetKeys.includes(kid)) {
-      intentTargetKeys.push(kid);
-      renderIntentTargetList({});
+    const modelName = sel.value;
+    if (modelName && !intentTargetModels.includes(modelName)) {
+      intentTargetModels.push(modelName);
+      renderIntentTargetList(intentModelWeights);
     }
   }
 
-  function removeIntentTarget(kid) {
-    intentTargetKeys = intentTargetKeys.filter(id => id !== kid);
-    renderIntentTargetList({});
+  function removeIntentTarget(modelName) {
+    intentTargetModels = intentTargetModels.filter(n => n !== modelName);
+    renderIntentTargetList(intentModelWeights);
   }
 
   async function saveIntent(id) {
-    const targetKeys = [...intentTargetKeys];
-    const keyWeights = {};
+    const targetModels = [...intentTargetModels];
+    const modelWeights = {};
     document.querySelectorAll('.intent-weight-input').forEach(input => {
       const v = input.value.trim();
-      if (v !== '') keyWeights[input.dataset.keyId] = parseInt(v);
+      if (v !== '') modelWeights[input.dataset.modelName] = parseInt(v);
     });
     const body = {
       label: document.getElementById('intent-label').value.trim(),
       name: document.getElementById('intent-name').value.trim(),
       description: document.getElementById('intent-description').value.trim(),
-      target_key_ids: targetKeys,
-      key_weights: keyWeights,
+      target_models: targetModels,
+      model_weights: modelWeights,
       sort_order: parseInt(document.getElementById('intent-sort-order').value) || 0,
       enabled: document.getElementById('intent-enabled').value === 'true',
     };

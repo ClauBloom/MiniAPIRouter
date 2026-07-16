@@ -28,6 +28,10 @@ public class IntentConfigDO {
     private List<Long> targetKeyIds;    // 目标 API Key ID 列表，以 JSON 存储
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Integer> keyWeights; // 各 Key 的权重映射，以 JSON 存储
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<String> targetModels;    // 目标模型对外名列表，以 JSON 存储
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private Map<String, Integer> modelWeights; // 各模型权重映射，以 JSON 存储
     private Integer sortOrder;          // 排序顺序
     private Integer enabled;            // 是否启用（1=启用, 0=禁用）
     private Integer isDefault;          // 是否为默认意图模板（1=是, 0=否）

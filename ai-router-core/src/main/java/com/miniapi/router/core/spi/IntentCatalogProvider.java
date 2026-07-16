@@ -18,4 +18,17 @@ public interface IntentCatalogProvider {
 
     /** 根据意图标签名查找指定租户下的单个意图配置 */
     IntentConfig findByLabel(Long tenantId, String label);
+
+    /**
+     * 查找指定租户的默认意图配置（is_default=1）。
+     * <p>
+     * 当意图评估返回的标签在 intent_config 表中无对应记录时
+     * （如 invalid_continuation、follow_up 等内置特殊意图），
+     * 路由引擎使用默认意图的 target_models 和 model_weights 作为回退。
+     * </p>
+     *
+     * @param tenantId 租户 ID
+     * @return 默认意图配置，不存在返回 null
+     */
+    IntentConfig findDefault(Long tenantId);
 }

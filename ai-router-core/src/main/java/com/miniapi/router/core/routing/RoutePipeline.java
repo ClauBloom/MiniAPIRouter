@@ -39,6 +39,7 @@ public class RoutePipeline {
     private final com.miniapi.router.core.spi.IntentCatalogProvider intentCatalogProvider; // 意图目录提供者
     private final FailureTracker failureTracker;                            // 失败追踪器
     private final SessionRouteMemory sessionRouteMemory;                    // 会话路由记忆
+    private final ModelConfigRepository modelConfigRepository;              // 模型配置仓储
     private final Map<String, RouteStrategy> strategies;                    // 策略名称 -> 策略实现 映射
 
     /**
@@ -52,6 +53,7 @@ public class RoutePipeline {
                          com.miniapi.router.core.spi.IntentCatalogProvider intentCatalogProvider,
                          FailureTracker failureTracker,
                          SessionRouteMemory sessionRouteMemory,
+                         ModelConfigRepository modelConfigRepository,
                          WeightStrategy weightStrategy,
                          PriorityStrategy priorityStrategy,
                          RoundRobinStrategy roundRobinStrategy,
@@ -63,6 +65,7 @@ public class RoutePipeline {
         this.intentCatalogProvider = intentCatalogProvider;
         this.failureTracker = failureTracker;
         this.sessionRouteMemory = sessionRouteMemory;
+        this.modelConfigRepository = modelConfigRepository;
         /* 注册所有可用策略 */
         this.strategies = Map.of(
                 "weight", weightStrategy,
@@ -80,6 +83,29 @@ public class RoutePipeline {
     public RouteResult route(RouteContext ctx) {
         Long tenantId = ctx.getTenantId();
         String model = ctx.getModel();
+
+        /* 0. 精确匹配直连：模型名在 model_config 中存在则直接路由 */
+        ModelConfig directModel = modelConfigRepository.findByDisplayName(tenantId, model);
+        if (directModel != null) {
+            ApiKeyConfig directKey = apiKeyConfigRepository.findById(directModel.getApiKeyId());
+            if (directKey != null && directKey.isEnabled()
+                    && !"down".equalsIgnoreCase(directKey.getHealthStatus())) {
+                // 匹配路由规则以获取 fallback 配置（但不做意图评估）
+                List<RouteRule> rules = routeRuleRepository.findEnabledRules(tenantId);
+                RouteRule matched = matchRule(rules, model, ctx);
+                ctx.setMatchedRule(matched);
+                log.info("[Route] Direct match: model='{}' -> key={} real='{}'",
+                        model, directKey.getName(), directModel.getRealName());
+                return RouteResult.builder()
+                        .selectedKey(directKey)
+                        .selectedModel(directModel.getDisplayName())
+                        .matchedRule(matched != null ? matched : rules.stream().findFirst().orElse(null))
+                        .fallbackChain(List.of())
+                        .strategy("direct")
+                        .intent(null)
+                        .build();
+            }
+        }
 
         /* 1. 匹配路由规则 */
         List<RouteRule> rules = routeRuleRepository.findEnabledRules(tenantId);
@@ -126,10 +152,17 @@ public class RoutePipeline {
                     if (cachedKey != null) {
                         log.info("[Route] ┌─ Cached(failure×{}) ──────────────────────────────",
                                 failureTracker.getFailureCount(sessionKey));
-                        log.info("[Route] │ ▶ {} (key={})", cachedKey.getName(), cached.keyId());
+                        log.info("[Route] │ ▶ {} (key={}, model={})", cachedKey.getName(), cached.keyId(), cached.selectedModel());
                         log.info("[Route] └──────────────────────────────────────────────────");
                         failureTracker.resetFailures(sessionKey);
-                        return buildResult(matched, cachedKey, candidates, cached.intent(), "intent_cached");
+                        return RouteResult.builder()
+                                .selectedKey(cachedKey)
+                                .selectedModel(cached.selectedModel())
+                                .matchedRule(matched)
+                                .fallbackChain(List.of())
+                                .strategy("intent_cached")
+                                .intent(cached.intent())
+                                .build();
                     }
                 }
             }
@@ -138,38 +171,57 @@ public class RoutePipeline {
             IntentWeightResult iwr = resolveIntentWeights(matched, candidates, ctx);
             if (iwr != null && iwr.intent != null) {
                 ctx.setIntent(iwr.intent);
-                com.miniapi.router.core.domain.IntentConfig ic =
-                        intentCatalogProvider.findByLabel(ctx.getTenantId(), iwr.intent);
-                Map<String, Integer> kw = ic != null ? ic.getKeyWeights() : null;
+                IntentConfig ic = intentCatalogProvider.findByLabel(ctx.getTenantId(), iwr.intent);
+                // 内置特殊意图（invalid_continuation、follow_up 等）在 intent_config 表中无记录，
+                // 回退到默认意图配置的 target_models / model_weights
+                if (ic == null) {
+                    ic = intentCatalogProvider.findDefault(ctx.getTenantId());
+                }
+                Map<String, Integer> mw = ic != null ? ic.getModelWeights() : null;
+                List<String> targetModelNames = ic != null ? ic.getTargetModels() : null;
 
-                /* 根据意图配置缩小候选 Key 范围：优先用 keyWeights，否则用 targetKeyIds */
-                if (kw != null && !kw.isEmpty()) {
-                    candidates = candidates.stream()
-                            .filter(k -> kw.containsKey(String.valueOf(k.getId())))
-                            .collect(Collectors.toList());
-                } else if (ic != null && ic.getTargetKeyIds() != null && !ic.getTargetKeyIds().isEmpty()) {
-                    List<ApiKeyConfig> filtered = candidates.stream()
-                            .filter(k -> ic.getTargetKeyIds().contains(k.getId()))
-                            .collect(Collectors.toList());
-                    if (!filtered.isEmpty()) {
-                        candidates = filtered;
+                /* 从 model_config 解析候选模型 */
+                List<ModelConfig> modelCandidates = new ArrayList<>();
+                if (targetModelNames != null && !targetModelNames.isEmpty()) {
+                    for (String name : targetModelNames) {
+                        ModelConfig mc = modelConfigRepository.findByDisplayName(ctx.getTenantId(), name);
+                        if (mc == null) continue;
+                        // 过滤掉所属 Key 禁用/不健康的
+                        ApiKeyConfig k = candidates.stream()
+                                .filter(c -> c.getId().equals(mc.getApiKeyId()))
+                                .findFirst().orElse(null);
+                        if (k != null) {
+                            modelCandidates.add(mc);
+                        }
+                    }
+                } else {
+                    // 未配置目标模型时，使用所有候选 Key 的全部模型作为候选
+                    for (ApiKeyConfig k : candidates) {
+                        modelCandidates.addAll(modelConfigRepository.findByApiKeyId(k.getId()));
                     }
                 }
 
-                String models = candidates.stream()
-                        .map(k -> String.format("%d:%s(w=%d)", k.getId(), k.getName(), getEffectiveWeight(k, kw)))
-                        .collect(Collectors.joining("  "));
-                log.info("[Route] ┌─ {}({}) ──────────────────────────────────────────",
-                        iwr.intent, iwr.score);
-                log.info("[Route] │ {}", models);
+                if (!modelCandidates.isEmpty()) {
+                    String modelLog = modelCandidates.stream()
+                            .map(m -> String.format("%s(real=%s,w=%d)", m.getDisplayName(), m.getRealName(),
+                                    getEffectiveModelWeight(m, mw)))
+                            .collect(Collectors.joining("  "));
+                    log.info("[Route] ┌─ {}({}) ──────────────────────────────────────────",
+                            iwr.intent, iwr.score);
+                    log.info("[Route] │ {}", modelLog);
 
-                ApiKeyConfig intentSelected = selectByScore(candidates, iwr.score, kw);
-                if (intentSelected != null) {
-                    log.info("[Route] │ ▶ {} (key={})", intentSelected.getName(), intentSelected.getId());
-                    log.info("[Route] └──────────────────────────────────────────────────");
-                    failureTracker.resetFailures(sessionKey);
-                    sessionRouteMemory.recordSuccess(sessionKey, intentSelected, iwr.intent, iwr.score);
-                    return buildResult(matched, intentSelected, candidates, iwr.intent, "intent_score");
+                    ModelConfig selectedModel = selectModelByScore(modelCandidates, iwr.score, mw);
+                    if (selectedModel != null) {
+                        ApiKeyConfig selectedKey = apiKeyConfigRepository.findById(selectedModel.getApiKeyId());
+                        // 构建 fallback chain（同意图其他模型）
+                        List<RouteTarget> fallbackChain = buildModelFallbackChain(modelCandidates, selectedModel, candidates);
+
+                        log.info("[Route] │ ▶ {} (key={})", selectedModel.getDisplayName(), selectedKey.getName());
+                        log.info("[Route] └──────────────────────────────────────────────────");
+                        failureTracker.resetFailures(sessionKey);
+                        sessionRouteMemory.recordSuccess(sessionKey, selectedKey, selectedModel.getDisplayName(), iwr.intent, iwr.score);
+                        return buildModelResult(matched, selectedKey, selectedModel, fallbackChain, iwr.intent, "intent_score");
+                    }
                 }
             }
 
@@ -183,9 +235,16 @@ public class RoutePipeline {
                     if (cachedKey != null) {
                         log.info("[Route] ┌─ {} → cached ──────────────────────",
                                 iwr.reasoning);
-                        log.info("[Route] │ ▶ {} (key={})", cachedKey.getName(), cached.keyId());
+                        log.info("[Route] │ ▶ {} (key={}, model={})", cachedKey.getName(), cached.keyId(), cached.selectedModel());
                         log.info("[Route] └──────────────────────────────────────────────────");
-                        return buildResult(matched, cachedKey, candidates, cached.intent(), "intent_cached");
+                        return RouteResult.builder()
+                                .selectedKey(cachedKey)
+                                .selectedModel(cached.selectedModel())
+                                .matchedRule(matched)
+                                .fallbackChain(List.of())
+                                .strategy("intent_cached")
+                                .intent(cached.intent())
+                                .build();
                     }
                 }
                 log.info("[Route] ┌─ {} (no cache) ─────────────────────────", iwr.reasoning);
@@ -202,10 +261,17 @@ public class RoutePipeline {
                         if (cachedKey != null) {
                             log.info("[Route] ┌─ Cached(failure×{}) ──────────────────────────────",
                                     failureTracker.getFailureCount(sessionKey));
-                            log.info("[Route] │ ▶ {} (key={})", cachedKey.getName(), cached.keyId());
+                            log.info("[Route] │ ▶ {} (key={}, model={})", cachedKey.getName(), cached.keyId(), cached.selectedModel());
                             log.info("[Route] └──────────────────────────────────────────────────");
                             failureTracker.resetFailures(sessionKey);
-                            return buildResult(matched, cachedKey, candidates, cached.intent(), "intent_cached");
+                            return RouteResult.builder()
+                                    .selectedKey(cachedKey)
+                                    .selectedModel(cached.selectedModel())
+                                    .matchedRule(matched)
+                                    .fallbackChain(List.of())
+                                    .strategy("intent_cached")
+                                    .intent(cached.intent())
+                                    .build();
                         }
                     }
                 }
@@ -270,14 +336,92 @@ public class RoutePipeline {
         return 1;
     }
 
+    /**
+     * 按评分选择最匹配的模型：根据意图评分和模型权重，选择权重不超过评分且最大的模型。
+     */
+    private ModelConfig selectModelByScore(List<ModelConfig> candidates, int score, Map<String, Integer> modelWeights) {
+        if (candidates == null || candidates.isEmpty()) return null;
+        List<ModelConfig> sorted = candidates.stream()
+                .sorted(Comparator.comparingInt(m -> getEffectiveModelWeight(m, modelWeights)))
+                .collect(Collectors.toList());
+        int bestWeight = -1;
+        List<ModelConfig> ties = new ArrayList<>();
+        for (ModelConfig m : sorted) {
+            int w = getEffectiveModelWeight(m, modelWeights);
+            if (w <= score) {
+                if (w > bestWeight) {
+                    bestWeight = w;
+                    ties.clear();
+                    ties.add(m);
+                } else if (w == bestWeight) {
+                    ties.add(m);
+                }
+            }
+        }
+        if (!ties.isEmpty()) {
+            return ties.size() == 1 ? ties.get(0) : ties.get(ThreadLocalRandom.current().nextInt(ties.size()));
+        }
+        return sorted.get(0);
+    }
+
+    /** 获取模型的有效权重 */
+    private int getEffectiveModelWeight(ModelConfig m, Map<String, Integer> modelWeights) {
+        if (modelWeights != null && modelWeights.containsKey(m.getDisplayName())) {
+            Integer w = modelWeights.get(m.getDisplayName());
+            if (w != null && w > 0) return w;
+        }
+        return 1;
+    }
+
+    /**
+     * 构建模型级 fallback chain：除选中模型外的其他候选模型，解析为 RouteTarget。
+     */
+    private List<RouteTarget> buildModelFallbackChain(List<ModelConfig> modelCandidates,
+                                                       ModelConfig selected, List<ApiKeyConfig> keyCandidates) {
+        List<RouteTarget> chain = new ArrayList<>();
+        for (ModelConfig mc : modelCandidates) {
+            if (mc.getDisplayName().equals(selected.getDisplayName())) continue;
+            ApiKeyConfig key = keyCandidates.stream()
+                    .filter(k -> k.getId().equals(mc.getApiKeyId()))
+                    .findFirst().orElse(null);
+            if (key != null) {
+                chain.add(new RouteTarget(key, mc.getDisplayName(), mc.getRealName()));
+            }
+        }
+        return chain;
+    }
+
+    /** 构建模型级路由结果 */
+    private RouteResult buildModelResult(RouteRule matched, ApiKeyConfig selectedKey,
+                                          ModelConfig selectedModel, List<RouteTarget> fallbackChain,
+                                          String intent, String strategyName) {
+        int maxFallback = matched != null && matched.getMaxFallback() != null ? matched.getMaxFallback() : 2;
+        if (fallbackChain.size() > maxFallback) {
+            fallbackChain = fallbackChain.subList(0, maxFallback);
+        }
+        return RouteResult.builder()
+                .selectedKey(selectedKey)
+                .selectedModel(selectedModel.getDisplayName())
+                .matchedRule(matched)
+                .fallbackChain(fallbackChain)
+                .strategy(strategyName)
+                .intent(intent)
+                .build();
+    }
+
     /** 构建路由结果对象，包含选中的 Key、匹配规则、回退链等 */
     private RouteResult buildResult(RouteRule matched, ApiKeyConfig selected, List<ApiKeyConfig> candidates, String intent, String strategyName) {
-        List<ApiKeyConfig> fallbackChain = new ArrayList<>();
-        /* 若启用回退，则构建除选中 Key 外的候选列表作为回退链，上限 maxFallback 个 */
+        List<RouteTarget> fallbackChain = new ArrayList<>();
         if (Boolean.TRUE.equals(matched.getFallbackEnabled())) {
-            fallbackChain = candidates.stream()
-                    .filter(k -> !k.getId().equals(selected.getId()))
-                    .collect(Collectors.toList());
+            for (ApiKeyConfig k : candidates) {
+                if (!k.getId().equals(selected.getId())) {
+                    // 非 intent 路径：使用 Key 的第一个模型作为 fallback 模型
+                    Map<String, String> mm = k.getModelMapping();
+                    String displayName = mm != null && !mm.isEmpty() ? mm.keySet().iterator().next() : null;
+                    String realName = mm != null && !mm.isEmpty() ? mm.values().iterator().next() : null;
+                    fallbackChain.add(new RouteTarget(k, displayName, realName));
+                }
+            }
             int maxFallback = matched.getMaxFallback() != null ? matched.getMaxFallback() : 2;
             if (fallbackChain.size() > maxFallback) {
                 fallbackChain = fallbackChain.subList(0, maxFallback);

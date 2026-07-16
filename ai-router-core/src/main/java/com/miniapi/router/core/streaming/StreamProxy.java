@@ -58,15 +58,14 @@ public class StreamProxy {
     public ProxyResult proxyNonStream(RouteResult routeResult, String inboundProtocol,
                                       String upstreamPath, Map<String, Object> upstreamBody,
                                       String defaultModel, String requestId) {
-        /* 构建调用链：主 Key + 回退链 */
-        List<ApiKeyConfig> chain = new ArrayList<>();
-        chain.add(routeResult.getSelectedKey());
-        if (routeResult.hasFallback()) chain.addAll(routeResult.getFallbackChain());
+        /* 构建调用链：主目标 + 回退链，均为 RouteTarget */
+        List<RouteTarget> chain = buildChain(routeResult);
 
         Exception lastError = null;
         for (int i = 0; i < chain.size(); i++) {
-            ApiKeyConfig key = chain.get(i);
-            upstreamBody.put("model", resolveEffectiveModel(key, defaultModel));
+            RouteTarget target = chain.get(i);
+            ApiKeyConfig key = target.key();
+            upstreamBody.put("model", target.realName());
             try {
                 UpstreamStreamClient.NonStreamResult result = upstreamClient.callUpstream(key, upstreamPath, upstreamBody);
                 if (result.statusCode() >= 400) {
@@ -74,7 +73,7 @@ public class StreamProxy {
                     continue;  // HTTP 错误状态码则尝试下一个回退 Key
                 }
                 /* 将上游原生响应解析为统一格式 */
-                UnifiedResponse unified = parseUpstreamResponse(result.body(), inboundProtocol, key, defaultModel, requestId);
+                UnifiedResponse unified = parseUpstreamResponse(result.body(), inboundProtocol, key, target.displayName(), requestId);
                 reasoningCache.store(unified.getContent(), unified.getReasoningContent());
                 return new ProxyResult(unified, key.getProvider(), key.getId());
             } catch (Exception e) {
@@ -181,9 +180,7 @@ public class StreamProxy {
      */
     public StreamContext proxyStream(StreamProxyContext ctx, OutputStream os) {
         /* 构建调用链 */
-        List<ApiKeyConfig> chain = new ArrayList<>();
-        chain.add(ctx.routeResult().getSelectedKey());
-        if (ctx.routeResult().hasFallback()) chain.addAll(ctx.routeResult().getFallbackChain());
+        List<RouteTarget> chain = buildChain(ctx.routeResult());
 
         StreamConverter streamConverter = protocolRegistry.getStreamConverter(ctx.inboundProtocol());
 
@@ -200,8 +197,9 @@ public class StreamProxy {
         Long apiKeyId = null;
 
         for (int i = 0; i < chain.size(); i++) {
-            ApiKeyConfig key = chain.get(i);
-            ctx.upstreamBody().put("model", resolveEffectiveModel(key, ctx.defaultModel()));
+            RouteTarget target = chain.get(i);
+            ApiKeyConfig key = target.key();
+            ctx.upstreamBody().put("model", target.realName());
             try {
                 BufferedReader reader = upstreamClient.streamUpstream(key, ctx.upstreamPath(), ctx.upstreamBody());
                 String line;
@@ -245,7 +243,7 @@ public class StreamProxy {
             } catch (Exception e) {
                 fallbackCount++;
                 if (i < chain.size() - 1) {
-                    ApiKeyConfig nextKey = chain.get(i + 1);
+                    ApiKeyConfig nextKey = chain.get(i + 1).key();
                     int maxFallback = ctx.routeResult().getMatchedRule().getMaxFallback() != null
                             ? ctx.routeResult().getMatchedRule().getMaxFallback() : 2;
                     /* 构建回退事件 */
@@ -321,16 +319,29 @@ public class StreamProxy {
     }
 
     /**
-     * 确定向上游发送的实际模型名称。
-     * 若入站模型不在映射表中，自动从映射表中选取第一个真实模型名。
+     * 构建调用链：主目标 + 回退链，均为 RouteTarget。
      */
-    private static String resolveEffectiveModel(ApiKeyConfig key, String inboundModel) {
-        Map<String, String> mm = key.getModelMapping();
-        if (mm == null || mm.isEmpty()) {
-            return inboundModel;
+    private List<RouteTarget> buildChain(RouteResult routeResult) {
+        List<RouteTarget> chain = new ArrayList<>();
+        ApiKeyConfig selectedKey = routeResult.getSelectedKey();
+        String selectedModel = routeResult.getSelectedModel();
+        Map<String, String> mm = selectedKey.getModelMapping();
+        String displayName = selectedModel;
+        String realName;
+        if (selectedModel != null && mm != null && mm.containsKey(selectedModel)) {
+            realName = mm.get(selectedModel);
+        } else if (mm != null && !mm.isEmpty()) {
+            Map.Entry<String, String> first = mm.entrySet().iterator().next();
+            displayName = first.getKey();
+            realName = first.getValue();
+        } else {
+            realName = selectedModel;
         }
-        String real = mm.get(inboundModel);
-        return real != null ? real : mm.values().iterator().next();
+        chain.add(new RouteTarget(selectedKey, displayName, realName));
+        if (routeResult.hasFallback()) {
+            chain.addAll(routeResult.getFallbackChain());
+        }
+        return chain;
     }
 
     /** 将 SSE 字符串写入 OutputStream 并立即刷新 */

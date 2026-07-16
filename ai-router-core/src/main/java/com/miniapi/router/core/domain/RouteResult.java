@@ -19,11 +19,14 @@ public class RouteResult {
     /** 选中的上游 API Key 配置 */
     private ApiKeyConfig selectedKey;
 
+    /** 选中的对外模型名 */
+    private String selectedModel;
+
     /** 匹配到的路由规则 */
     private RouteRule matchedRule;
 
-    /** 回退链路：按优先级排序的备用上游 Key 列表 */
-    private List<ApiKeyConfig> fallbackChain;
+    /** 回退链路：按优先级排序的备用路由目标（Key + 模型） */
+    private List<RouteTarget> fallbackChain;
 
     /** 使用的路由策略名称，如 weight、priority 等 */
     private String strategy;
@@ -43,14 +46,19 @@ public class RouteResult {
     /**
      * 解析实际请求上游时应使用的模型名称。
      * <p>
-     * 根据选中 Key 的模型映射表，将入站模型名（名称）翻译为真实模型名。
-     * 若入站模型不在映射表中，自动从映射表中选取第一个真实模型名。
+     * 优先使用路由选中的模型名（selectedModel）。
+     * 若未设置，回退到入站模型名通过 Key 的模型映射解析。
      * </p>
      *
-     * @param inboundModel 入站请求指定的模型名（名称）
+     * @param inboundModel 入站请求指定的模型名
      * @return 实际向上游转发的模型名（真实模型名）
      */
     public String resolveUpstreamModel(String inboundModel) {
+        // 优先使用路由选中的模型
+        if (selectedModel != null && !selectedModel.isEmpty()) {
+            return selectedModel;
+        }
+        // 回退：通过 Key 的模型映射解析
         if (selectedKey == null || selectedKey.getModelMapping() == null || selectedKey.getModelMapping().isEmpty()) {
             return inboundModel;
         }

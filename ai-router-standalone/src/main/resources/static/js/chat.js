@@ -42,8 +42,9 @@ const Chat = (() => {
         modelSelect.innerHTML = '<option value="">⚠ 请先在配置页添加 API Key</option>';
         const empty = document.getElementById('chat-empty');
         if (empty) {
-          empty.querySelector('.chat-empty-icon').textContent = '⚙';
-          empty.querySelector('.chat-empty-text').innerHTML = '尚未配置 API Key<br>请先切换到「配置」页面添加';
+          empty.querySelector('.chat-empty-icon').textContent = '✦';
+          empty.querySelector('.chat-empty-title').innerHTML = '尚未配置 API Key';
+          empty.querySelector('.chat-empty-text').innerHTML = '请先切换到「配置」页面添加';
         }
         return;
       }
@@ -258,8 +259,9 @@ const Chat = (() => {
     messages = [];
     const container = document.getElementById('chat-messages');
     container.innerHTML = `<div class="chat-empty" id="chat-empty">
-      <div class="chat-empty-icon">💬</div>
-      <div class="chat-empty-text">开始对话吧</div>
+      <div class="chat-empty-icon">✦</div>
+      <div class="chat-empty-title">今天能帮您做些什么？</div>
+      <div class="chat-empty-text">选择模型，开始对话</div>
     </div>`;
   }
 

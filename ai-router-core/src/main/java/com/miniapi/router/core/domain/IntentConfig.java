@@ -29,11 +29,19 @@ public class IntentConfig {
     /** 意图描述 */
     private String description;
 
-    /** 该意图可路由的目标 API Key ID 列表 */
+    /** @deprecated 使用 {@link #targetModels} */
+    @Deprecated
     private List<Long> targetKeyIds;
 
-    /** 各 Key 的权重映射，key 为 Key ID，value 为权重值 */
+    /** @deprecated 使用 {@link #modelWeights} */
+    @Deprecated
     private Map<String, Integer> keyWeights;
+
+    /** 该意图可路由的目标模型对外名列表 */
+    private List<String> targetModels;
+
+    /** 各模型的权重映射，key 为对外模型名，value 为权重值 */
+    private Map<String, Integer> modelWeights;
 
     /** 排序序号 */
     private Integer sortOrder;

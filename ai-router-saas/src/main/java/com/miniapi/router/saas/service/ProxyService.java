@@ -161,7 +161,9 @@ public class ProxyService {
         // 确定上游协议和模型
         String upstreamProtocol = selectedKey.getProtocol() != null ? selectedKey.getProtocol() : "openai";
         unifiedReq.setUpstreamProtocol(upstreamProtocol);
-        unifiedReq.setModel(routeResult.resolveUpstreamModel(model));
+        String upstreamModel = routeResult.getSelectedModel() != null
+                ? routeResult.getSelectedModel() : routeResult.resolveUpstreamModel(model);
+        unifiedReq.setModel(upstreamModel);
 
         // 构建上游请求路径和请求体
         String upstreamPath = getUpstreamPath(upstreamProtocol);

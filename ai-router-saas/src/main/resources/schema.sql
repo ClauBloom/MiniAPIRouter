@@ -126,3 +126,16 @@ CREATE TABLE IF NOT EXISTS request_log_meta (
     KEY idx_log_status (tenant_id, status, created_at),
     KEY idx_log_model (tenant_id, model, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 模型配置表
+CREATE TABLE IF NOT EXISTS model_config (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT NOT NULL,
+    display_name VARCHAR(128) NOT NULL,
+    real_name VARCHAR(128) NOT NULL,
+    api_key_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_tenant_display (tenant_id, display_name),
+    KEY idx_model_apikey (api_key_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -27,31 +27,29 @@ public class SessionRouteMemory {
     /** 内部缓存条目：记录成功路由时的 Key、模型、意图和评分 */
     private static class Entry {
         Long selectedKeyId;       // 被选中的 API Key ID
-        String selectedKeyModel;  // 被选中的 Key 的第一个模型名
+        String selectedModel;     // 被选中的对外模型名
         String intent;            // 意图标签
         int score;                // 意图评分
         long lastAccessTime;      // 最后访问时间，用于 TTL 判断
     }
 
     /** 记录一次成功的意图路由结果 */
-    public void recordSuccess(String sessionKey, ApiKeyConfig key, String intent, int score) {
+    public void recordSuccess(String sessionKey, ApiKeyConfig key, String selectedModel, String intent, int score) {
         Entry entry = memory.computeIfAbsent(sessionKey, k -> new Entry());
         entry.selectedKeyId = key.getId();
-        Map<String, String> mm = key.getModelMapping();
-        entry.selectedKeyModel = mm != null && !mm.isEmpty()
-                ? mm.keySet().iterator().next() : null;
+        entry.selectedModel = selectedModel;
         entry.intent = intent;
         entry.score = score;
         entry.lastAccessTime = System.currentTimeMillis();
-        log.debug("[SessionRouteMemory] session={} recorded key_id={} intent={} score={}",
-                sessionKey, key.getId(), intent, score);
+        log.debug("[SessionRouteMemory] session={} recorded key_id={} model={} intent={} score={}",
+                sessionKey, key.getId(), selectedModel, intent, score);
     }
 
     /** 获取指定会话的最后一次成功路由缓存，不存在则返回 null */
     public CachedResult getLastSuccess(String sessionKey) {
         Entry entry = memory.get(sessionKey);
         if (entry == null || entry.selectedKeyId == null) return null;
-        return new CachedResult(entry.selectedKeyId, entry.selectedKeyModel,
+        return new CachedResult(entry.selectedKeyId, entry.selectedModel, entry.selectedModel,
                 entry.intent, entry.score);
     }
 
@@ -69,5 +67,5 @@ public class SessionRouteMemory {
     }
 
     /** 缓存查询结果，不可变记录 */
-    public record CachedResult(Long keyId, String model, String intent, int score) {}
+    public record CachedResult(Long keyId, String model, String selectedModel, String intent, int score) {}
 }
