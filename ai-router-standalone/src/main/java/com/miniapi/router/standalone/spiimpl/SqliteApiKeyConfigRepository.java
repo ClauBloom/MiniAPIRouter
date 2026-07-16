@@ -249,7 +249,8 @@ public class SqliteApiKeyConfigRepository implements ApiKeyConfigRepository {
         dO.setProtocol(c.getProtocol());
         dO.setApiKeyEnc(c.getApiKeyEnc());
         dO.setBaseUrl(c.getBaseUrl());
-        // 模型映射不再写入 models 列，由 model_config 表管理（ConfigService 负责）
+        // 模型映射由 model_config 表管理，但 api_key_config.models 列有 NOT NULL 约束，写空对象占位
+        dO.setModelMapping(Map.of());
         dO.setPriority(c.getPriority());
         dO.setMaxConcurrent(c.getMaxConcurrent());
         dO.setQpsLimit(c.getQpsLimit());

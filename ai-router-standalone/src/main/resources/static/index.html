@@ -5,51 +5,83 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
-  <title>MiniAPIRouter Standalone</title>
-  <link rel="stylesheet" href="/css/app.css?v=3">
+  <title>MiniAPIRouter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css?v=4">
 </head>
 <body>
 <div id="app">
 
-  <!-- ===== Navbar ===== -->
-  <nav class="navbar">
-    <span class="navbar-brand">⚡ MiniAPIRouter</span>
-    <div class="navbar-tabs">
-      <button class="nav-tab active" data-tab="chat">💬 对话</button>
-      <button class="nav-tab" data-tab="config">⚙ 配置</button>
-      <button class="nav-tab" data-tab="log">📋 日志</button>
+  <!-- ===== Sidebar ===== -->
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <span class="sidebar-logo">✦</span>
+      <span class="sidebar-brand-text">MiniAPIRouter</span>
     </div>
-    <div class="navbar-right">
-      <span class="status-dot"></span>
-      <span id="nav-status">Running</span>
+    <div class="sidebar-nav">
+      <button class="nav-tab active" data-tab="chat">
+        <svg class="nav-tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span>对话</span>
+      </button>
+      <button class="nav-tab" data-tab="config">
+        <svg class="nav-tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>配置</span>
+      </button>
+      <button class="nav-tab" data-tab="log">
+        <svg class="nav-tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        <span>日志</span>
+      </button>
+    </div>
+    <div class="sidebar-footer">
+      <div class="status-indicator">
+        <span class="status-dot"></span>
+        <span id="nav-status">Running</span>
+      </div>
     </div>
   </nav>
 
-  <!-- ===== Content ===== -->
-  <div class="content">
+  <!-- ===== Main ===== -->
+  <main class="main">
 
     <!-- ===== Chat View ===== -->
     <div class="view active chat-view" id="view-chat">
       <div class="chat-config-bar">
-        <label style="margin:0">模型:</label>
+        <label class="chat-config-label">模型</label>
         <select id="chat-model"></select>
-        <button class="btn btn-sm" id="btn-clear-chat" title="清空对话">🗑 清空</button>
+        <button class="btn btn-ghost btn-sm" id="btn-clear-chat" title="清空对话">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          清空
+        </button>
       </div>
       <div class="chat-messages" id="chat-messages">
         <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty-icon">💬</div>
+          <div class="chat-empty-icon">✦</div>
+          <div class="chat-empty-title">今天能帮您做些什么？</div>
           <div class="chat-empty-text">选择模型，开始对话</div>
         </div>
       </div>
-      <div class="chat-input-bar">
-        <textarea id="chat-input" rows="1" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"></textarea>
-        <button class="btn btn-primary" id="chat-send">发送</button>
-        <button class="btn btn-danger" id="chat-stop" style="display:none">停止</button>
+      <div class="chat-input-wrapper">
+        <div class="chat-input-bar">
+          <textarea id="chat-input" rows="1" placeholder="给 MiniAPIRouter 发送消息..."></textarea>
+          <button class="btn btn-primary btn-send" id="chat-send" title="发送">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+          <button class="btn btn-danger btn-send" id="chat-stop" style="display:none" title="停止">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+        </div>
+        <div class="chat-input-hint">Enter 发送 · Shift+Enter 换行</div>
       </div>
     </div>
 
     <!-- ===== Config View ===== -->
     <div class="view config-view" id="view-config">
+      <div class="view-header">
+        <h1 class="view-title">配置</h1>
+        <p class="view-subtitle">管理 API Key、路由规则与意图路由</p>
+      </div>
       <div class="config-section">
         <div class="config-section-header">
           <span class="card-title">API Key 配置</span>
@@ -83,13 +115,14 @@
 
     <!-- ===== Log View ===== -->
     <div class="view log-view" id="view-log">
+      <div class="view-header">
+        <h1 class="view-title">请求日志</h1>
+        <button class="btn btn-ghost btn-sm" id="btn-dashboard">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          看板
+        </button>
+      </div>
       <div class="card">
-        <div class="card-header">
-          <span class="card-title">请求日志</span>
-          <div class="btn-group">
-            <button class="btn btn-sm" id="btn-dashboard">📊 看板</button>
-          </div>
-        </div>
         <div class="log-filters mb-0">
           <div class="form-group">
             <label>模型</label>
@@ -109,7 +142,7 @@
             <input id="log-filter-trace" placeholder="trace id">
           </div>
           <div class="form-group">
-            <button class="btn btn-primary" id="btn-log-search">🔍 查询</button>
+            <button class="btn btn-primary" id="btn-log-search">查询</button>
           </div>
         </div>
       </div>
@@ -135,14 +168,14 @@
         <div class="pagination">
           <span class="pagination-info" id="log-page-info">第 1 页</span>
           <div class="btn-group">
-            <button class="btn btn-sm" id="btn-log-prev">上一页</button>
-            <button class="btn btn-sm" id="btn-log-next">下一页</button>
+            <button class="btn btn-ghost btn-sm" id="btn-log-prev">上一页</button>
+            <button class="btn btn-ghost btn-sm" id="btn-log-next">下一页</button>
           </div>
         </div>
       </div>
     </div>
 
-  </div>
+  </main>
 </div>
 
 <!-- ===== Modal ===== -->
@@ -153,9 +186,9 @@
 <!-- ===== Toast ===== -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/js/app.js?v=2"></script>
-<script src="/js/chat.js?v=2"></script>
-<script src="/js/config.js?v=2"></script>
-<script src="/js/log.js?v=2"></script>
+<script src="/js/app.js?v=3"></script>
+<script src="/js/chat.js?v=3"></script>
+<script src="/js/config.js?v=3"></script>
+<script src="/js/log.js?v=3"></script>
 </body>
 </html>

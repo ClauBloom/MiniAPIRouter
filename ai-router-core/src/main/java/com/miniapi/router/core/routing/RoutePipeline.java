@@ -172,6 +172,11 @@ public class RoutePipeline {
             if (iwr != null && iwr.intent != null) {
                 ctx.setIntent(iwr.intent);
                 IntentConfig ic = intentCatalogProvider.findByLabel(ctx.getTenantId(), iwr.intent);
+                // 内置特殊意图（invalid_continuation、follow_up 等）在 intent_config 表中无记录，
+                // 回退到默认意图配置的 target_models / model_weights
+                if (ic == null) {
+                    ic = intentCatalogProvider.findDefault(ctx.getTenantId());
+                }
                 Map<String, Integer> mw = ic != null ? ic.getModelWeights() : null;
                 List<String> targetModelNames = ic != null ? ic.getTargetModels() : null;
 
@@ -188,6 +193,11 @@ public class RoutePipeline {
                         if (k != null) {
                             modelCandidates.add(mc);
                         }
+                    }
+                } else {
+                    // 未配置目标模型时，使用所有候选 Key 的全部模型作为候选
+                    for (ApiKeyConfig k : candidates) {
+                        modelCandidates.addAll(modelConfigRepository.findByApiKeyId(k.getId()));
                     }
                 }
 

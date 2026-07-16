@@ -63,6 +63,21 @@ public class SqliteIntentCatalogProvider implements IntentCatalogProvider {
     }
 
     /**
+     * 查找指定租户的默认意图配置（is_default=1）。
+     *
+     * @param tenantId 租户 ID
+     * @return 默认意图配置，不存在返回 null
+     */
+    @Override
+    public IntentConfig findDefault(Long tenantId) {
+        IntentConfigDO dO = mapper.selectOne(
+                new LambdaQueryWrapper<IntentConfigDO>()
+                        .eq(IntentConfigDO::getTenantId, tenantId)
+                        .eq(IntentConfigDO::getIsDefault, 1));
+        return dO != null ? toDomain(dO) : null;
+    }
+
+    /**
      * 将 DO 转换为域对象（Integer 转 Boolean）。
      *
      * @param dO 数据对象

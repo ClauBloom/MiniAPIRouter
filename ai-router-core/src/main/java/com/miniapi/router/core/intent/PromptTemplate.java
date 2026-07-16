@@ -79,7 +79,7 @@ public class PromptTemplate {
                 3. 创建文件、删除文件、重命名 -> simple_instruction（不是coding_review）
                 4. 只有用户要求审查代码质量、排查bug、分析潜在问题 时才归类为 coding_review
                 5. 只有需要多步逻辑推理、架构设计、方案论证时才归类为 reasoning
-                6. 编写新功能/实现业务逻辑 -> coding（如果有此标签）或 coding_review
+                6. 编写新功能/实现业务逻辑 -> coding_review
 
                 ## 修正规则
                 1. 当用户明确要求修bug、指出运行错误（如"有bug"、"运行报错"、"结果不对"）时，在当前评估基础上适当上浮（通常+10-15），但不必强制达到75。

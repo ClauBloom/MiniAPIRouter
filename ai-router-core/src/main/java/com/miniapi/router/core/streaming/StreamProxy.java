@@ -325,12 +325,19 @@ public class StreamProxy {
         List<RouteTarget> chain = new ArrayList<>();
         ApiKeyConfig selectedKey = routeResult.getSelectedKey();
         String selectedModel = routeResult.getSelectedModel();
-        // 解析主目标的 realName
-        String realName = selectedModel;
-        if (selectedKey.getModelMapping() != null && selectedKey.getModelMapping().containsKey(selectedModel)) {
-            realName = selectedKey.getModelMapping().get(selectedModel);
+        Map<String, String> mm = selectedKey.getModelMapping();
+        String displayName = selectedModel;
+        String realName;
+        if (selectedModel != null && mm != null && mm.containsKey(selectedModel)) {
+            realName = mm.get(selectedModel);
+        } else if (mm != null && !mm.isEmpty()) {
+            Map.Entry<String, String> first = mm.entrySet().iterator().next();
+            displayName = first.getKey();
+            realName = first.getValue();
+        } else {
+            realName = selectedModel;
         }
-        chain.add(new RouteTarget(selectedKey, selectedModel, realName));
+        chain.add(new RouteTarget(selectedKey, displayName, realName));
         if (routeResult.hasFallback()) {
             chain.addAll(routeResult.getFallbackChain());
         }

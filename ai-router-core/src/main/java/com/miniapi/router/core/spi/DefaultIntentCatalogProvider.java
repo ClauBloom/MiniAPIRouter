@@ -35,6 +35,11 @@ public class DefaultIntentCatalogProvider implements IntentCatalogProvider {
                 .orElse(null);
     }
 
+    @Override
+    public IntentConfig findDefault(Long tenantId) {
+        return null;
+    }
+
     /** 构建默认意图分类列表（8 种预定义分类） */
     private static List<IntentConfig> buildDefaultCatalog() {
         return List.of(
