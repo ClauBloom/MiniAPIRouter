@@ -1,0 +1,251 @@
+name: Build and Package
+
+on:
+  push:
+    branches: [main, snapshot]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            artifact: linux-x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            artifact: linux-aarch64
+          - os: windows-latest
+            arch: x86_64
+            artifact: windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fakeroot dpkg-dev binutils rpm zstd
+
+      - name: Download appimagetool (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          case "${{ matrix.arch }}" in
+            x86_64)  APPIMG_ARCH="x86_64" ;;
+            aarch64) APPIMG_ARCH="aarch64" ;;
+          esac
+          curl -sSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMG_ARCH}.AppImage" \
+            -o /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
+
+      - name: Build standalone module
+        run: mvn -pl ai-router-core,ai-router-standalone -am package -DskipTests -q
+
+      - name: Get raw version
+        id: rawver
+        shell: bash
+        run: |
+          VER=$(mvn -pl ai-router-standalone help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "raw=$VER" >> $GITHUB_OUTPUT
+          SANITIZED=$(echo "$VER" | sed 's/[^0-9.]/./g' | sed 's/\.\+/./g' | sed 's/^\.//;s/\.$//')
+          echo "sanitized=$SANITIZED" >> $GITHUB_OUTPUT
+
+      - name: Prepare dist directory
+        shell: bash
+        run: mkdir -p dist
+
+      - name: Copy universal JAR (Linux x86_64 only)
+        if: runner.os == 'Linux' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          V="${{ steps.rawver.outputs.raw }}"
+          SRC="ai-router-standalone/target/MiniAPIRouter-Standalone-${V}.jar"
+          cp "$SRC" "dist/MiniAPIRouter-v${V}-universal.jar"
+
+      - name: Package Linux (deb + rpm + AppImage + pkg.tar.zst)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          V="${{ steps.rawver.outputs.raw }}"
+          SV="${{ steps.rawver.outputs.sanitized }}"
+          ARCH="${{ matrix.arch }}"
+          JAR="MiniAPIRouter-Standalone-${V}.jar"
+          PASS=0
+          FAIL=0
+
+          # ---- .deb ----
+          echo "::group::Package .deb"
+          if jpackage \
+            --name MiniAPIRouter \
+            --input ai-router-standalone/target \
+            --main-jar "${JAR}" \
+            --main-class org.springframework.boot.loader.JarLauncher \
+            --type deb \
+            --dest dist \
+            --app-version "${SV}" \
+            --vendor "MiniAPI" \
+            --description "MiniAPIRouter - AI API Router" \
+            --copyright "Copyright (c) 2024 MiniAPI" \
+            --java-options "-Xmx512m" \
+            --java-options "-Dfile.encoding=UTF-8" \
+            --linux-package-name "miniapirouter" \
+            --install-dir /opt/miniapirouter; then
+            mv dist/miniapirouter_*_*.deb "dist/MiniAPIRouter-v${V}-linux-${ARCH}.deb"
+            echo "✅ .deb OK"
+            PASS=$((PASS+1))
+          else
+            echo "❌ .deb failed"
+            FAIL=$((FAIL+1))
+          fi
+          echo "::endgroup::"
+
+          # ---- .rpm ----
+          echo "::group::Package .rpm"
+          if jpackage \
+            --name MiniAPIRouter \
+            --input ai-router-standalone/target \
+            --main-jar "${JAR}" \
+            --main-class org.springframework.boot.loader.JarLauncher \
+            --type rpm \
+            --dest dist \
+            --app-version "${SV}" \
+            --vendor "MiniAPI" \
+            --description "MiniAPIRouter - AI API Router" \
+            --copyright "Copyright (c) 2024 MiniAPI" \
+            --java-options "-Xmx512m" \
+            --java-options "-Dfile.encoding=UTF-8" \
+            --linux-package-name "miniapirouter" \
+            --install-dir /opt/miniapirouter; then
+            mv dist/miniapirouter-*.${ARCH}.rpm "dist/MiniAPIRouter-v${V}-linux-${ARCH}.rpm"
+            echo "✅ .rpm OK"
+            PASS=$((PASS+1))
+          else
+            echo "❌ .rpm failed"
+            FAIL=$((FAIL+1))
+          fi
+          echo "::endgroup::"
+
+          # ---- app-image (prerequisite for AppImage / pkg.tar.zst) ----
+          echo "::group::Build app-image"
+          jpackage \
+            --name MiniAPIRouter \
+            --input ai-router-standalone/target \
+            --main-jar "${JAR}" \
+            --main-class org.springframework.boot.loader.JarLauncher \
+            --type app-image \
+            --dest build-app-image \
+            --app-version "${SV}" \
+            --vendor "MiniAPI" \
+            --description "MiniAPIRouter - AI API Router" \
+            --copyright "Copyright (c) 2024 MiniAPI" \
+            --java-options "-Xmx512m" \
+            --java-options "-Dfile.encoding=UTF-8"
+          echo "::endgroup::"
+
+          # ---- AppImage ----
+          echo "::group::Package AppImage"
+          APPDIR="appdir"
+          rm -rf "${APPDIR}"
+          mkdir -p "${APPDIR}"
+          cp -r build-app-image/MiniAPIRouter/* "${APPDIR}/"
+          cat > "${APPDIR}/MiniAPIRouter.desktop" << 'DESKTOPEOF'
+          [Desktop Entry]
+          Name=MiniAPIRouter
+          Exec=MiniAPIRouter
+          Icon=MiniAPIRouter
+          Type=Application
+          Categories=Development;
+          DESKTOPEOF
+          cp "${APPDIR}/lib/app/MiniAPIRouter.png" "${APPDIR}/MiniAPIRouter.png" 2>/dev/null || true
+          ln -sf MiniAPIRouter.png "${APPDIR}/.DirIcon" 2>/dev/null || true
+          if appimagetool "${APPDIR}" "dist/MiniAPIRouter-v${V}-linux-${ARCH}.AppImage"; then
+            echo "✅ AppImage OK"
+            PASS=$((PASS+1))
+          else
+            echo "❌ AppImage failed"
+            FAIL=$((FAIL+1))
+          fi
+          echo "::endgroup::"
+
+          # ---- .pkg.tar.zst (Arch Linux) ----
+          echo "::group::Package .pkg.tar.zst"
+          PKG_DIR="pkg-miniapirouter"
+          rm -rf "${PKG_DIR}"
+          INSTALL_DIR="${PKG_DIR}/opt/miniapirouter"
+          mkdir -p "${INSTALL_DIR}"
+          cp -r build-app-image/MiniAPIRouter/* "${INSTALL_DIR}/"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          cat > "${PKG_DIR}/usr/bin/miniapirouter" << 'WRAPPEREOF'
+          #!/bin/sh
+          exec /opt/miniapirouter/bin/MiniAPIRouter "$@"
+          WRAPPEREOF
+          chmod +x "${PKG_DIR}/usr/bin/miniapirouter"
+          mkdir -p "${PKG_DIR}/usr/share/applications"
+          cat > "${PKG_DIR}/usr/share/applications/miniapirouter.desktop" << 'DESKEOF'
+          [Desktop Entry]
+          Name=MiniAPIRouter
+          Exec=/usr/bin/miniapirouter
+          Icon=miniapirouter
+          Type=Application
+          Categories=Development;
+          DESKEOF
+          mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/256x256/apps"
+          cp build-app-image/MiniAPIRouter/lib/app/MiniAPIRouter.png \
+            "${PKG_DIR}/usr/share/icons/hicolor/256x256/apps/miniapirouter.png" 2>/dev/null || true
+          if tar -cC "${PKG_DIR}" . | zstd -o "dist/MiniAPIRouter-v${V}-linux-${ARCH}.pkg.tar.zst"; then
+            echo "✅ .pkg.tar.zst OK"
+            PASS=$((PASS+1))
+          else
+            echo "❌ .pkg.tar.zst failed"
+            FAIL=$((FAIL+1))
+          fi
+          echo "::endgroup::"
+
+          echo "::notice::Packaging summary: ${PASS} passed, ${FAIL} failed"
+
+      - name: Package Windows (fat jar + JRE + launcher + zip)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $VERSION = "${{ steps.rawver.outputs.raw }}"
+          $ARCH = "${{ matrix.artifact }}"
+          $JAR = "MiniAPIRouter-Standalone-$VERSION.jar"
+          $PKG = "MiniAPIRouter-v$VERSION-windows-$ARCH"
+
+          New-Item -ItemType Directory -Path "dist/$PKG" -Force
+
+          Copy-Item "ai-router-standalone/target/$JAR" "dist/$PKG/"
+
+          & jlink --add-modules java.base,java.logging,java.xml,java.sql,java.naming,java.desktop,java.management,java.security.jgss,java.instrument,jdk.unsupported --output "dist/$PKG/runtime"
+
+          Set-Content -Path "dist/$PKG/start.bat" -Encoding Ascii -Value @"
+          @echo off
+          title MiniAPIRouter
+          "%~dp0runtime\bin\java" -jar "%~dp0$JAR" %*
+          pause
+          "@
+
+          Compress-Archive -Path "dist/$PKG" -DestinationPath "dist/$PKG.zip"
+          Remove-Item -Recurse -Force "dist/$PKG"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniAPIRouter-${{ matrix.artifact }}
+          path: dist/
+          if-no-files-found: error
