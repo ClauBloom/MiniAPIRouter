@@ -498,8 +498,10 @@ const Config = (() => {
   }
 
   let intentTargetModels = [];
+  let intentModelWeights = {};
 
   function renderIntentTargetList(modelWeights) {
+    intentModelWeights = modelWeights;
     const container = document.getElementById('intent-target-list');
     if (!container) return;
     if (intentTargetModels.length === 0) {
@@ -558,13 +560,13 @@ const Config = (() => {
     const modelName = sel.value;
     if (modelName && !intentTargetModels.includes(modelName)) {
       intentTargetModels.push(modelName);
-      renderIntentTargetList({});
+      renderIntentTargetList(intentModelWeights);
     }
   }
 
   function removeIntentTarget(modelName) {
     intentTargetModels = intentTargetModels.filter(n => n !== modelName);
-    renderIntentTargetList({});
+    renderIntentTargetList(intentModelWeights);
   }
 
   async function saveIntent(id) {
