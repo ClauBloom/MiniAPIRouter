@@ -16,6 +16,7 @@
   --success: #54A475;
   --danger: #DC5F5F;
   --warning: #D6A548;
+  --info: #4A8FD4;
   --radius: 16px;
   --radius-sm: 12px;
   --radius-xs: 8px;
@@ -330,6 +331,9 @@ tr:hover td { background: var(--bg-hover); }
 .badge-orange { background: rgba(214, 165, 72, 0.12); color: var(--warning); }
 .badge-gray { background: rgba(138, 134, 125, 0.12); color: var(--text-dim); }
 .badge-blue { background: rgba(217, 119, 87, 0.12); color: var(--accent); }
+.badge-info { background: rgba(74, 143, 212, 0.12); color: var(--info); }
+.badge-clickable { cursor: pointer; transition: filter 0.15s; }
+.badge-clickable:hover { filter: brightness(0.9); }
 
 /* ===== Chat ===== */
 .chat-view {

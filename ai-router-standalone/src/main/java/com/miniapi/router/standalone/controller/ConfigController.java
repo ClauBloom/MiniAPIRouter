@@ -100,6 +100,18 @@ public class ConfigController {
         return ApiResponse.success();
     }
 
+    /**
+     * 对指定 API Key 执行健康检测。
+     * 发送测试请求到上游，根据响应判定健康状态。
+     *
+     * @param id API Key ID
+     * @return 检测结果，包含 health_status 和 detail
+     */
+    @PostMapping("/api-keys/{id}/health-check")
+    public ApiResponse<Object> healthCheck(@PathVariable Long id) {
+        return ApiResponse.success(configService.healthCheck(id));
+    }
+
     // ===== 路由规则管理 =====
 
     /**
