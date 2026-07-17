@@ -186,10 +186,20 @@ public class RoutePipeline {
                     for (String name : targetModelNames) {
                         ModelConfig mc = modelConfigRepository.findByDisplayName(ctx.getTenantId(), name);
                         if (mc == null) continue;
-                        // 过滤掉所属 Key 禁用/不健康的
+                        // 优先从已过滤的候选 Key 中查找
                         ApiKeyConfig k = candidates.stream()
                                 .filter(c -> c.getId().equals(mc.getApiKeyId()))
                                 .findFirst().orElse(null);
+                        // 若不在候选列表（可能被 RouteRule.targetKeyIds 限制），
+                        // 直接查询 Key 并校验启用/健康状态
+                        if (k == null) {
+                            ApiKeyConfig direct = apiKeyConfigRepository.findById(mc.getApiKeyId());
+                            if (direct != null && direct.isEnabled()
+                                    && !"down".equalsIgnoreCase(direct.getHealthStatus())) {
+                                candidates.add(direct);
+                                k = direct;
+                            }
+                        }
                         if (k != null) {
                             modelCandidates.add(mc);
                         }
@@ -291,49 +301,6 @@ public class RoutePipeline {
         log.info("[Route] ★ strategy='{}' selected: key_id={} name={}",
                 strategy.name(), selected.getId(), selected.getName());
         return buildResult(matched, selected, candidates, ctx.getIntent(), strategy.name());
-    }
-
-    /**
-     * 按评分选择最匹配的 Key：根据意图评分和 Key 权重，选择权重不超过评分且最大的 Key。
-     * 若有多个同权重 Key，则随机选取。
-     */
-    private ApiKeyConfig selectByScore(List<ApiKeyConfig> candidates, int score, Map<String, Integer> keyWeights) {
-        if (candidates == null || candidates.isEmpty()) return null;
-        /* 按有效权重升序排序 */
-        List<ApiKeyConfig> sorted = candidates.stream()
-                .sorted(Comparator.comparingInt(k -> getEffectiveWeight(k, keyWeights)))
-                .collect(Collectors.toList());
-        int bestWeight = -1;
-        List<ApiKeyConfig> ties = new ArrayList<>();
-        /* 找到权重不超过评分且最大的 Key（最佳匹配） */
-        for (ApiKeyConfig k : sorted) {
-            int w = getEffectiveWeight(k, keyWeights);
-            if (w <= score) {
-                if (w > bestWeight) {
-                    bestWeight = w;
-                    ties.clear();
-                    ties.add(k);
-                } else if (w == bestWeight) {
-                    ties.add(k);
-                }
-            }
-        }
-        if (!ties.isEmpty()) {
-            /* 若存在并列则随机选择 */
-            return ties.size() == 1 ? ties.get(0) : ties.get(ThreadLocalRandom.current().nextInt(ties.size()));
-        }
-        return sorted.get(0);
-    }
-
-    /** 获取 Key 的有效权重：优先使用意图权重映射表中的值，否则默认使用 1 */
-    private int getEffectiveWeight(ApiKeyConfig k, Map<String, Integer> keyWeights) {
-        if (keyWeights != null && keyWeights.containsKey(String.valueOf(k.getId()))) {
-            Integer w = keyWeights.get(String.valueOf(k.getId()));
-            if (w != null && w > 0) {
-                return w;
-            }
-        }
-        return 1;
     }
 
     /**

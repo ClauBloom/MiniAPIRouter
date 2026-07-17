@@ -90,8 +90,6 @@ public class SqliteIntentCatalogProvider implements IntentCatalogProvider {
         c.setLabel(dO.getLabel());
         c.setName(dO.getName());
         c.setDescription(dO.getDescription());
-        c.setTargetKeyIds(dO.getTargetKeyIds());
-        c.setKeyWeights(dO.getKeyWeights());
         c.setTargetModels(dO.getTargetModels());
         c.setModelWeights(dO.getModelWeights());
         c.setSortOrder(dO.getSortOrder());

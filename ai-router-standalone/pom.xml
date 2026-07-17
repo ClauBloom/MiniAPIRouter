@@ -12,12 +12,12 @@
 
     <artifactId>ai-router-standalone</artifactId>
     <name>MiniAPIRouter Standalone Host</name>
-    <version>1.0.3-SNAPSHOT</version>
+    <version>1.0.4-SNAPSHOT</version>
     <dependencies>
         <dependency>
             <groupId>com.miniapi</groupId>
             <artifactId>ai-router-core</artifactId>
-            <version>1.0.3-SNAPSHOT</version>
+            <version>1.0.4-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

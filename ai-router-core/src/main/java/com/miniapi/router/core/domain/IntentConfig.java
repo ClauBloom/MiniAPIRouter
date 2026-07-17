@@ -7,8 +7,8 @@ import java.util.Map;
 /**
  * 意图路由配置领域对象。
  * <p>
- * 定义某个业务意图对应的上游路由策略，包括目标 Key 列表、
- * 各 Key 的权重、排序等。支持默认意图和自定义意图两种模式。
+ * 定义某个业务意图对应的上游路由策略，包括目标模型列表、
+ * 各模型的权重、排序等。支持默认意图和自定义意图两种模式。
  * </p>
  */
 @Data
@@ -28,14 +28,6 @@ public class IntentConfig {
 
     /** 意图描述 */
     private String description;
-
-    /** @deprecated 使用 {@link #targetModels} */
-    @Deprecated
-    private List<Long> targetKeyIds;
-
-    /** @deprecated 使用 {@link #modelWeights} */
-    @Deprecated
-    private Map<String, Integer> keyWeights;
 
     /** 该意图可路由的目标模型对外名列表 */
     private List<String> targetModels;
