@@ -68,6 +68,7 @@ public class IntentEvaluator {
      *
      * @param candidates  候选 API Key 配置列表
      * @param messages    对话消息历史
+     * @param tools       工具定义列表（function-calling tools），用于判断请求能力
      * @param intentModel 用于意图识别的模型名称
      * @param evalKey     用于调用意图模型的 API Key 配置
      * @param tenantId    租户 ID
@@ -75,6 +76,7 @@ public class IntentEvaluator {
      * @return 意图评估结果，包含意图标签、复杂度评分和推理说明
      */
     public IntentResult evaluate(List<ApiKeyConfig> candidates, List<Map<String, Object>> messages,
+                                  List<Map<String, Object>> tools,
                                   String intentModel, ApiKeyConfig evalKey, Long tenantId, String agentId) {
         if (candidates == null || candidates.isEmpty() || messages == null || messages.isEmpty()) {
             return null;
@@ -93,13 +95,18 @@ public class IntentEvaluator {
         // 提取 Agent 最近活动的摘要信息
         String agentActivity = promptTemplate.extractAgentActivitySummary(messages);
 
+        // 提取工具可用性摘要和上文用户提问
+        String toolsSummary = promptTemplate.extractToolsSummary(tools);
+        String priorUserQuestions = promptTemplate.extractPriorUserQuestions(messages);
+
         // 获取当前租户的意图分类目录
         List<IntentConfig> catalog = catalogProvider.findAll(tenantId);
 
-        // 构建缓存键：agentId + 用户问题 + Agent活动摘要（截取前100字符）
+        // 构建缓存键：agentId + 用户问题 + 工具摘要 + Agent活动摘要（截取前100字符）
         String agentPrefix = (agentId != null && !agentId.isBlank()) ? agentId + "|" : "";
-        String cacheKey = agentPrefix + (agentActivity.isBlank() ? userQuestion
-                : userQuestion + "|" + agentActivity.substring(0, Math.min(100, agentActivity.length())));
+        String cacheKey = agentPrefix + userQuestion
+                + (toolsSummary != null ? "|t:" + toolsSummary : "")
+                + (agentActivity.isBlank() ? "" : "|" + agentActivity.substring(0, Math.min(100, agentActivity.length())));
         log.info("[IntentEval] question='{}' agentActivity='{}' cacheKey='{}'",
                 userQuestion.substring(0, Math.min(60, userQuestion.length())),
                 agentActivity.isBlank() ? "(none)" : agentActivity,
@@ -114,7 +121,8 @@ public class IntentEvaluator {
 
         // 构建意图识别模型的 system 提示和 user 提示
         String systemPrompt = promptTemplate.buildSystemPrompt(catalog);
-        String userPrompt = promptTemplate.buildUserPrompt(candidates, userQuestion, agentActivity);
+        String userPrompt = promptTemplate.buildUserPrompt(candidates, userQuestion,
+                priorUserQuestions, toolsSummary, agentActivity);
 
         log.debug("[IntentEval] ===== Prompt (Intent Classification) =====");
         log.debug("[IntentEval] model={}", intentModel);

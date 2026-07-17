@@ -117,6 +117,7 @@ public class StandaloneProxyService {
                 .inboundProtocol(inboundProtocol)
                 .model(model)
                 .messages(unifiedReq.getMessages())
+                .tools(unifiedReq.getTools())
                 .systemPrompt(unifiedReq.getSystemPrompt())
                 .parameters(unifiedReq.getExtraParams())
                 .stream(stream)

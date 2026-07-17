@@ -1,6 +1,7 @@
 package com.miniapi.router.core.streaming;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.miniapi.router.core.domain.*;
 import com.miniapi.router.core.exception.AllUpstreamFailedException;
 import com.miniapi.router.core.exception.RouterException;
@@ -36,6 +37,7 @@ import java.util.function.Consumer;
 public class StreamProxy {
 
     private static final Logger log = LoggerFactory.getLogger(StreamProxy.class);
+    private static final ObjectMapper RAW_MAPPER = new ObjectMapper();
 
     private final UpstreamStreamClient upstreamClient;      // 上游 HTTP 客户端
     private final ProtocolRegistry protocolRegistry;         // 协议注册表
@@ -86,17 +88,20 @@ public class StreamProxy {
     /**
      * 解析上游非流式响应为统一格式。
      * 根据 Key 的协议类型（openai/anthropic）采用不同的解析逻辑。
+     * 同时将原始上游响应存入 raw 字段，用于协议匹配时的透传。
      */
     @SuppressWarnings("unchecked")
     private UnifiedResponse parseUpstreamResponse(String body, String inboundProtocol, ApiKeyConfig key,
-                                                  String defaultModel, String requestId) {
+                                                   String defaultModel, String requestId) {
         JsonNode node = JsonUtils.parse(body);
         UnifiedResponse resp = new UnifiedResponse();
         resp.setUpstreamProtocol(key.getProtocol());
         resp.setModel(node.path("model").asText(defaultModel));
         resp.setId(node.path("id").asText(requestId));
+        // 保存原始上游响应用于透传
+        resp.setRaw(jsonNodeToMap(node));
 
-        /* OpenAI 协议解析：取 choices[0].message */
+        /* OpenAI 协议解析 */
         if ("openai".equalsIgnoreCase(key.getProtocol())) {
             JsonNode choices = node.path("choices");
             if (choices.isArray() && !choices.isEmpty()) {
@@ -109,8 +114,9 @@ public class StreamProxy {
                 }
             }
         } else {
-            /* Anthropic 协议解析：从 content 数组中提取文本 */
+            /* Anthropic 协议解析：提取文本和完整内容块 */
             resp.setContent(extractAnthropicContent(node));
+            resp.setContentBlocks(extractAnthropicContentBlocks(node));
             resp.setRole("assistant");
             resp.setFinishReason(mapAnthropicStop(node.path("stop_reason").asText("end_turn")));
         }
@@ -123,6 +129,12 @@ public class StreamProxy {
             resp.setTotalTokens(usage.path("total_tokens").asInt(resp.getPromptTokens() + resp.getCompletionTokens()));
         }
         return resp;
+    }
+
+    /** JsonNode 转 Map，用于原始响应透传 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> jsonNodeToMap(JsonNode node) {
+        return RAW_MAPPER.convertValue(node, Map.class);
     }
 
     /** 从 Anthropic 响应的 content 数组中提取所有 text 类型的文本块并拼接 */
@@ -138,6 +150,20 @@ public class StreamProxy {
             return sb.toString();
         }
         return "";
+    }
+
+    /** 从 Anthropic 响应的 content 数组中提取所有内容块（包括 text、tool_use、thinking） */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractAnthropicContentBlocks(JsonNode node) {
+        JsonNode content = node.path("content");
+        if (content.isArray() && content.size() > 0) {
+            List<Map<String, Object>> blocks = new ArrayList<>();
+            for (JsonNode block : content) {
+                blocks.add(jsonNodeToMap(block));
+            }
+            return blocks;
+        }
+        return null;
     }
 
     /** 将 Anthropic 的 stop_reason 映射为 OpenAI 风格的 finish_reason */
@@ -195,6 +221,7 @@ public class StreamProxy {
         int fallbackCount = 0;
         String mappedProvider = null;
         Long apiKeyId = null;
+        Map<String, Integer> upstreamUsageFromChunks = null;      // 从流块中提取的上游真实用量
 
         for (int i = 0; i < chain.size(); i++) {
             RouteTarget target = chain.get(i);
@@ -227,6 +254,10 @@ public class StreamProxy {
                         }
                         if (chunk.getReasoningContent() != null) {
                             accumulatedReasoning.append(chunk.getReasoningContent());
+                        }
+                        // 收集上游返回的真实 usage（优于估算值）
+                        if (chunk.getUpstreamUsage() != null) {
+                            upstreamUsageFromChunks = chunk.getUpstreamUsage();
                         }
                         /* 覆盖 id/model 为请求级标识，再转换为下游协议格式输出 */
                         chunk.setId(ctx.requestId());
@@ -289,8 +320,18 @@ public class StreamProxy {
             }
         }
 
-        /* 计算并构建用量统计 */
+        /* 计算并构建用量统计，优先使用上游返回的真实用量 */
         promptTokens = TokenCounter.estimate(JsonUtils.toJson(ctx.upstreamBody().get("messages")));
+        if (upstreamUsageFromChunks != null) {
+            if (upstreamUsageFromChunks.containsKey("prompt_tokens")) {
+                promptTokens = upstreamUsageFromChunks.get("prompt_tokens");
+            }
+            if (upstreamUsageFromChunks.containsKey("completion_tokens")) {
+                completionTokens = upstreamUsageFromChunks.get("completion_tokens");
+            } else if (upstreamUsageFromChunks.containsKey("output_tokens")) {
+                completionTokens = upstreamUsageFromChunks.get("output_tokens");
+            }
+        }
         int totalTokens = promptTokens + completionTokens;
         int latencyMs = (int) (System.currentTimeMillis() - startTime);
         UsageStats stats = UsageStats.builder()

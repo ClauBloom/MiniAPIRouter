@@ -29,6 +29,8 @@ public class AnthropicRequestConverter implements RequestConverter {
         if (system instanceof String s) {
             req.setSystemPrompt(s);
         }
+        // 当 system 为非 String 类型（如 Anthropic 结构化 system prompt 数组）时，
+        // 不存入 systemPrompt，也不从 extra 中移除，使其通过 extraParams 透传
         if (rawRequest.get("temperature") != null) {
             req.setTemperature(((Number) rawRequest.get("temperature")).doubleValue());
         }
@@ -44,7 +46,9 @@ public class AnthropicRequestConverter implements RequestConverter {
         Map<String, Object> extra = new LinkedHashMap<>(rawRequest);
         extra.remove("model");
         extra.remove("messages");
-        extra.remove("system");
+        if (system instanceof String) {
+            extra.remove("system");  // 已捕获为 systemPrompt，从 extra 移除
+        }
         extra.remove("temperature");
         extra.remove("max_tokens");
         extra.remove("top_p");
@@ -69,8 +73,6 @@ public class AnthropicRequestConverter implements RequestConverter {
         if (request.getSystemPrompt() != null) body.put("system", request.getSystemPrompt());
         if (request.getMaxTokens() != null) {
             body.put("max_tokens", request.getMaxTokens());
-        } else {
-            body.put("max_tokens", 4096); // 默认最大 token 数
         }
         if (request.getTemperature() != null) body.put("temperature", request.getTemperature());
         if (request.getTopP() != null) body.put("top_p", request.getTopP());
