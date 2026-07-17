@@ -68,7 +68,7 @@ public class DataInitializer implements ApplicationRunner {
         migrateModelConfigTable();
         migrateIntentModelColumns();
         migrateModelsToModelConfig();
-        migrateIntentKeyToModel();
+        dropLegacyIntentColumns(); // 删除 intent_config 旧列 target_key_ids / key_weights
         migrateAgentColumns(); // 迁移 Agent 隔离相关列
         seedIntents();         // 初始化意图数据
 
@@ -222,45 +222,30 @@ public class DataInitializer implements ApplicationRunner {
     }
 
     /**
-     * 将 intent_config 的 target_key_ids / key_weights 迁移为 target_models / model_weights。
-     * 通过 model_config 表反查 Key ID -> 模型名。
-     * 幂等：target_models 已有值则跳过。
+     * 删除 intent_config 表中已废弃的 target_key_ids / key_weights 列。
+     * 这些列已被 target_models / model_weights 取代。
+     * 幂等：列不存在时跳过。
      */
-    @SuppressWarnings("unchecked")
-    private void migrateIntentKeyToModel() {
-        List<IntentConfigDO> allIntents = intentMapper.selectList(null);
-        for (IntentConfigDO intent : allIntents) {
-            // 已迁移过则跳过
-            if (intent.getTargetModels() != null && !intent.getTargetModels().isEmpty()) continue;
-
-            List<Long> targetKeyIds = intent.getTargetKeyIds();
-            Map<String, Integer> keyWeights = intent.getKeyWeights();
-            if (targetKeyIds == null || targetKeyIds.isEmpty()) {
-                intent.setTargetModels(List.of());
-                intent.setModelWeights(new LinkedHashMap<>());
-            } else {
-                List<String> targetModels = new ArrayList<>();
-                Map<String, Integer> modelWeights = new LinkedHashMap<>();
-                for (Long keyId : targetKeyIds) {
-                    List<ModelConfig> models = modelConfigRepository.findByApiKeyId(keyId);
-                    if (models.isEmpty()) continue;
-                    // 取该 Key 下第一个模型名
-                    String firstModel = models.get(0).getDisplayName();
-                    targetModels.add(firstModel);
-                    // 迁移权重
-                    if (keyWeights != null) {
-                        Integer w = keyWeights.get(String.valueOf(keyId));
-                        if (w != null) {
-                            modelWeights.put(firstModel, w);
-                        }
-                    }
-                }
-                intent.setTargetModels(targetModels);
-                intent.setModelWeights(modelWeights);
+    private void dropLegacyIntentColumns() {
+        List<Map<String, Object>> columns = jdbcTemplate.queryForList("PRAGMA table_info(intent_config)");
+        boolean hasTargetKeyIds = columns.stream().anyMatch(c -> "target_key_ids".equals(c.get("name")));
+        boolean hasKeyWeights = columns.stream().anyMatch(c -> "key_weights".equals(c.get("name")));
+        if (hasTargetKeyIds) {
+            try {
+                jdbcTemplate.execute("ALTER TABLE intent_config DROP COLUMN target_key_ids");
+                log.info("[Migration] Dropped target_key_ids column from intent_config");
+            } catch (Exception e) {
+                log.warn("[Migration] Failed to drop target_key_ids column: {}", e.getMessage());
             }
-            intentMapper.updateById(intent);
         }
-        log.info("[Migration] Migrated intent_config target_key_ids -> target_models");
+        if (hasKeyWeights) {
+            try {
+                jdbcTemplate.execute("ALTER TABLE intent_config DROP COLUMN key_weights");
+                log.info("[Migration] Dropped key_weights column from intent_config");
+            } catch (Exception e) {
+                log.warn("[Migration] Failed to drop key_weights column: {}", e.getMessage());
+            }
+        }
     }
 
     /**
@@ -306,8 +291,6 @@ public class DataInitializer implements ApplicationRunner {
             dft.setLabel("default");
             dft.setName("默认意图路由");
             dft.setDescription("作为其他意图的默认模板，编辑后会同步到未自定义的意图");
-            dft.setTargetKeyIds(List.of());
-            dft.setKeyWeights(new LinkedHashMap<>());
             dft.setTargetModels(List.of());
             dft.setModelWeights(new LinkedHashMap<>());
             dft.setSortOrder(0);
@@ -347,8 +330,6 @@ public class DataInitializer implements ApplicationRunner {
         dO.setLabel(label);
         dO.setName(name);
         dO.setDescription(description);
-        dO.setTargetKeyIds(List.of());
-        dO.setKeyWeights(new LinkedHashMap<>());
         dO.setTargetModels(List.of());
         dO.setModelWeights(new LinkedHashMap<>());
         dO.setSortOrder(sortOrder);

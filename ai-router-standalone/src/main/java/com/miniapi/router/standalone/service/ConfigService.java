@@ -457,7 +457,7 @@ public class ConfigService {
 
     /**
      * 重置意图配置为跟随默认。
-     * 将 customized 设为 0，并同步默认意图的 targetKeyIds 和 keyWeights。
+     * 将 customized 设为 0，并同步默认意图的 targetModels 和 modelWeights。
      *
      * @param id 意图配置 ID
      */
@@ -480,50 +480,12 @@ public class ConfigService {
     }
 
     /**
-     * 根据权重 Map 的 Key 对齐目标 Key ID 列表。
-     * 如果有权重配置，则从权重 Map 的 Key 中提取 Key ID 列表。
-     *
-     * @param config 意图配置
-     */
-    private void alignTargetKeyIds(IntentConfig config) {
-        Map<String, Integer> kw = config.getKeyWeights();
-        if (kw != null && !kw.isEmpty()) {
-            List<Long> ids = kw.keySet().stream()
-                    .map(Long::parseLong)
-                    .collect(Collectors.toList());
-            config.setTargetKeyIds(ids);
-        }
-    }
-
-    /**
      * 根据 modelWeights 的 Key 对齐 targetModels 列表。
      */
     private void alignTargetModels(IntentConfig config) {
         Map<String, Integer> mw = config.getModelWeights();
         if (mw != null && !mw.isEmpty()) {
             config.setTargetModels(new ArrayList<>(mw.keySet()));
-        }
-    }
-
-    /**
-     * 将默认意图的配置级联同步到所有未自定义的意图。
-     * 当默认意图被编辑后，所有未被用户自定义过的意图会继承默认意图的目标 Key 和权重配置。
-     *
-     * @param targetKeyIds 默认意图的目标 Key ID 列表
-     * @param keyWeights   默认意图的权重配置
-     */
-    private void cascadeToNonCustomized(List<Long> targetKeyIds, Map<String, Integer> keyWeights) {
-        // 查询所有未自定义的非默认意图
-        List<IntentConfigDO> nonCustomized = intentMapper.selectList(
-                new LambdaQueryWrapper<IntentConfigDO>()
-                        .eq(IntentConfigDO::getTenantId, TENANT_ID)
-                        .eq(IntentConfigDO::getIsDefault, 0)
-                        .eq(IntentConfigDO::getCustomized, 0));
-        // 逐个同步配置
-        for (IntentConfigDO d : nonCustomized) {
-            d.setTargetKeyIds(targetKeyIds);
-            d.setKeyWeights(keyWeights);
-            intentMapper.updateById(d);
         }
     }
 
@@ -545,7 +507,7 @@ public class ConfigService {
 
     /**
      * 将意图配置 DO 转换为响应 Map。
-     * 如果配置了目标 Key ID，会查询并附加目标 Key 的摘要信息。
+     * 如果配置了目标模型，会查询并附加目标模型的摘要信息。
      *
      * @param dO 意图配置 DO
      * @return 响应 Map
@@ -556,7 +518,6 @@ public class ConfigService {
         m.put("label", dO.getLabel());
         m.put("name", dO.getName());
         m.put("description", dO.getDescription());
-        m.put("target_key_ids", dO.getTargetKeyIds());
         m.put("target_models", dO.getTargetModels());
         // 附加模型详情（所属 Key 名）
         if (dO.getTargetModels() != null && !dO.getTargetModels().isEmpty()) {
@@ -574,7 +535,6 @@ public class ConfigService {
             }
             m.put("target_model_details", targetModelList);
         }
-        m.put("key_weights", dO.getKeyWeights());
         m.put("model_weights", dO.getModelWeights());
         m.put("sort_order", dO.getSortOrder());
         m.put("enabled", dO.getEnabled() != null && dO.getEnabled() == 1);
@@ -596,8 +556,6 @@ public class ConfigService {
         dO.setLabel(c.getLabel());
         dO.setName(c.getName());
         dO.setDescription(c.getDescription());
-        dO.setTargetKeyIds(c.getTargetKeyIds());
-        dO.setKeyWeights(c.getKeyWeights());
         dO.setTargetModels(c.getTargetModels());
         dO.setModelWeights(c.getModelWeights());
         dO.setSortOrder(c.getSortOrder());

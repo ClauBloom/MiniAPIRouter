@@ -3,9 +3,7 @@ package com.miniapi.router.core.spi;
 import com.miniapi.router.core.domain.IntentConfig;
 import org.springframework.stereotype.Component;
 
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 默认意图分类目录提供者。
@@ -61,8 +59,6 @@ public class DefaultIntentCatalogProvider implements IntentCatalogProvider {
         c.setName(name);
         c.setDescription(description);
         c.setSortOrder(sortOrder);
-        c.setTargetKeyIds(List.of());
-        c.setKeyWeights(new LinkedHashMap<>());
         c.setEnabled(true);
         return c;
     }

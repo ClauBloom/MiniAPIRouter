@@ -82,8 +82,6 @@ CREATE TABLE IF NOT EXISTS intent_config (
     label TEXT NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
-    target_key_ids TEXT NOT NULL DEFAULT '[]',
-    key_weights TEXT NOT NULL DEFAULT '{}',
     target_models TEXT NOT NULL DEFAULT '[]',
     model_weights TEXT NOT NULL DEFAULT '{}',
     sort_order INTEGER NOT NULL DEFAULT 0,

@@ -25,10 +25,6 @@ public class IntentConfigDO {
     private String name;                // 意图名称（中文显示名）
     private String description;         // 意图描述
     @TableField(typeHandler = JacksonTypeHandler.class)
-    private List<Long> targetKeyIds;    // 目标 API Key ID 列表，以 JSON 存储
-    @TableField(typeHandler = JacksonTypeHandler.class)
-    private Map<String, Integer> keyWeights; // 各 Key 的权重映射，以 JSON 存储
-    @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> targetModels;    // 目标模型对外名列表，以 JSON 存储
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Integer> modelWeights; // 各模型权重映射，以 JSON 存储
