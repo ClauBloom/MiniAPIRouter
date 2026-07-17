@@ -54,6 +54,11 @@ public class PromptTemplate {
                 2. 文件数量多不等于复杂度高。批量添加注释、批量修改格式、批量重命名等操作即使涉及几十个文件，复杂度仍然很低。
                 3. 以下评分参考区间仅作为定性参考，实际评分应根据具体任务性质判断，不要盲目向上取整。
                 4. 用户提问的措辞不应作为评分的主要依据。用户可能用简短随意的语言（如"帮我完成"、"继续"、"搞定这个"）描述一个实际上很复杂的任务，因为复杂度取决于任务本身的实质而非用户如何描述它。评分必须结合Agent当前的工作上下文——正在编辑什么文件、涉及哪些模块、修改范围有多大——来综合判断任务的实际复杂度，而非仅凭用户提问的字面意思。
+                5. 可用工具对复杂度的影响：
+                   - 若"可用工具"为"(无工具)"：用户处于纯对话/Q&A模式，无法执行代码操作。此时应倾向于归类为 simple_instruction 或 other，复杂度通常不超过40（除非涉及多步推理的理论性问题）。
+                   - 若"可用工具"为空（未提供）：不做特殊调整，按正常规则评分。
+                   - 若列出了具体工具名：用户具有完整的代码操作能力，评分应基于任务本身的复杂度，不受"无工具"约束。
+                6. 上文用户提问的作用：当提供上文用户提问时，它揭示了对话的延续上下文。当前提问可能是对上文的延续、修正或补充，评分应结合上文意图综合判断，而非孤立评估当前提问。
 
                 ## 多模块/多文件区分规则（重要）
                 区分"物理多文件"和"逻辑多模块"这两个完全不同的概念：
@@ -114,15 +119,25 @@ public class PromptTemplate {
     }
 
     /**
-     * 构建意图评估的 user prompt，包含用户提问和 Agent 最近活动摘要。
+     * 构建意图评估的 user prompt，包含用户提问、工具可用性信号、上文用户提问摘要和 Agent 最近活动。
      *
      * @param candidates          候选列表（当前未在实际内容中使用，保留供扩展）
      * @param userQuestion        用户最新提问
+     * @param priorUserQuestions  上一个用户提问（可为 null），提供多轮对话上下文
+     * @param toolsSummary        可用工具摘要（如 "read, edit, bash, task"），无工具时为 "(无工具)"
      * @param agentActivitySummary Agent 最近活动的摘要文本
      * @return 完整的 user prompt 字符串
      */
-    public String buildUserPrompt(List<?> candidates, String userQuestion, String agentActivitySummary) {
+    public String buildUserPrompt(List<?> candidates, String userQuestion,
+                                   String priorUserQuestions, String toolsSummary,
+                                   String agentActivitySummary) {
         StringBuilder sb = new StringBuilder();
+        if (toolsSummary != null && !toolsSummary.isBlank()) {
+            sb.append("## 可用工具\n").append(toolsSummary).append("\n\n");
+        }
+        if (priorUserQuestions != null && !priorUserQuestions.isBlank()) {
+            sb.append("## 上文用户提问\n").append(priorUserQuestions).append("\n\n");
+        }
         sb.append("## 用户提问\n").append(userQuestion).append("\n\n");
         if (agentActivitySummary != null && !agentActivitySummary.isBlank()) {
             sb.append("## Agent最近活动\n").append(agentActivitySummary).append("\n\n");
@@ -274,5 +289,59 @@ public class PromptTemplate {
             }
         }
         return "";
+    }
+
+    /**
+     * 提取倒数第二条用户提问，用于向意图模型提供多轮对话的上文上下文。
+     *
+     * @param messages 对话消息历史
+     * @return 上一个用户提问文本，若不存在则返回 null
+     */
+    public String extractPriorUserQuestions(List<Map<String, Object>> messages) {
+        if (messages == null || messages.size() < 2) return null;
+        String latest = extractUserQuestion(messages);
+        // 寻找倒数第二个 user 消息（不等于最新提问）
+        boolean foundLatest = false;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Map<String, Object> msg = messages.get(i);
+            Object role = msg.get("role");
+            Object content = msg.get("content");
+            if ("user".equals(role) && content != null && !content.toString().isBlank()) {
+                String text = content.toString().trim();
+                if (!foundLatest) {
+                    // 跳过最新提问
+                    if (text.equals(latest)) {
+                        foundLatest = true;
+                    }
+                } else {
+                    return text;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从工具定义列表中提取可读的可用工具摘要。
+     * 提取每个工具的 function.name，组合成简洁的摘要字符串。
+     *
+     * @param tools 工具定义列表（来自请求的 tools 字段）
+     * @return 工具摘要字符串，如 "read, edit, bash, task"；无工具时返回 "(无工具)"；null 时返回 null
+     */
+    public String extractToolsSummary(List<Map<String, Object>> tools) {
+        if (tools == null) return null;
+        if (tools.isEmpty()) return "(无工具)";
+        List<String> names = new ArrayList<>();
+        for (Map<String, Object> tool : tools) {
+            Object funcObj = tool.get("function");
+            if (funcObj instanceof Map<?, ?> func) {
+                String name = (String) func.get("name");
+                if (name != null && !name.isBlank()) {
+                    names.add(name);
+                }
+            }
+        }
+        if (names.isEmpty()) return "(无工具)";
+        return String.join(", ", names);
     }
 }

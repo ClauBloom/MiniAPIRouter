@@ -37,6 +37,9 @@ public class RouteContext {
     /** 对话消息列表，每条消息含 role 和 content 字段 */
     private List<Map<String, Object>> messages;
 
+    /** 工具定义列表（function-calling tools），用于判断请求能力 */
+    private List<Map<String, Object>> tools;
+
     /** 系统提示词 */
     private String systemPrompt;
 

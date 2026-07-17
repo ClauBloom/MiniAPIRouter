@@ -72,6 +72,9 @@ public class OpenAIRequestConverter implements RequestConverter {
         body.put("stream", Boolean.TRUE.equals(request.getStream()));
         // 合并额外参数（客户端可传 thinking 等参数）
         if (request.getExtraParams() != null) body.putAll(request.getExtraParams());
+        // 当 assistant 消息缺少 reasoning_content 时禁用 thinking 模式，
+        // 避免 DeepSeek 等推理模型报错 "reasoning_content must be passed back"
+        disableThinkingIfReasoningIncomplete(body);
         return body;
     }
 
@@ -79,7 +82,8 @@ public class OpenAIRequestConverter implements RequestConverter {
      * 确保对话历史中 reasoning_content 的完整性，避免 DeepSeek 等推理模型报错。
      * <p>
      * 策略：若部分 assistant 消息有 reasoning_content 而部分没有，则尝试从缓存补齐。
-     * 缓存无法补齐时，清理全部 reasoning_content 以中断要求回传的链路。
+     * 缓存无法补齐时保留已有 reasoning_content，
+     * 由 {@link #disableThinkingIfReasoningIncomplete} 禁用 thinking 模式。
      * </p>
      *
      * @param messages 原始消息列表
@@ -96,12 +100,10 @@ public class OpenAIRequestConverter implements RequestConverter {
                 else anyMissing = true;
             }
         }
-        if (!anyHas) return messages;       // 无 reasoning_content，无需处理
-        if (!anyMissing) return messages;    // 全部齐备，无需处理
+        if (!anyHas) return messages;
+        if (!anyMissing) return messages;
 
-        // 有缺失：尝试从缓存补齐
         List<Map<String, Object>> result = new ArrayList<>();
-        boolean allFilled = true;
         for (Map<String, Object> msg : messages) {
             if ("assistant".equals(msg.get("role")) && !msg.containsKey("reasoning_content")) {
                 Object contentObj = msg.get("content");
@@ -112,26 +114,32 @@ public class OpenAIRequestConverter implements RequestConverter {
                     enriched.put("reasoning_content", reasoning);
                     result.add(enriched);
                 } else {
-                    allFilled = false;
                     result.add(msg);
                 }
             } else {
                 result.add(msg);
             }
         }
-        if (allFilled) return result;
+        return result;
+    }
 
-        // 缓存无法补齐：清理全部 reasoning_content 以中断要求回传链路
-        List<Map<String, Object>> cleaned = new ArrayList<>();
-        for (Map<String, Object> msg : result) {
-            if ("assistant".equals(msg.get("role")) && msg.containsKey("reasoning_content")) {
-                Map<String, Object> stripped = new LinkedHashMap<>(msg);
-                stripped.remove("reasoning_content");
-                cleaned.add(stripped);
-            } else {
-                cleaned.add(msg);
+    /**
+     * 当任意 assistant 消息缺少 reasoning_content 时，显式禁用 thinking 模式。
+     * <p>
+     * DeepSeek 等推理模型要求：若 thinking 模式开启，所有 assistant 消息必须包含 reasoning_content。
+     * 缺少时会报 400 错误："The reasoning_content in the thinking mode must be passed back to the API"。
+     * 因此当无法保证 reasoning_content 完整时，必须禁用 thinking 模式。
+     * </p>
+     */
+    @SuppressWarnings("unchecked")
+    private void disableThinkingIfReasoningIncomplete(Map<String, Object> body) {
+        List<Map<String, Object>> messages = (List<Map<String, Object>>) body.get("messages");
+        if (messages == null) return;
+        for (Map<String, Object> msg : messages) {
+            if ("assistant".equals(msg.get("role")) && !msg.containsKey("reasoning_content")) {
+                body.put("thinking", Map.of("type", "disabled"));
+                return;
             }
         }
-        return cleaned;
     }
 }

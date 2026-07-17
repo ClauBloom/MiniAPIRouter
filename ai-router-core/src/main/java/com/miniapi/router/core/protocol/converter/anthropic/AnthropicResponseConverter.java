@@ -18,29 +18,35 @@ public class AnthropicResponseConverter implements ResponseConverter {
 
     @Override
     public Map<String, Object> convert(UnifiedResponse response, String inboundProtocol) {
+        // 当上游协议与入站协议一致时，直接透传原始响应，避免字段丢失
+        if (response.getRaw() != null && response.getUpstreamProtocol() != null
+                && response.getUpstreamProtocol().equalsIgnoreCase(inboundProtocol)) {
+            Map<String, Object> result = new LinkedHashMap<>(response.getRaw());
+            if (response.getId() != null) result.put("id", response.getId());
+            result.put("model", response.getModel());
+            return result;
+        }
+
+        // 跨协议转换：基于解析字段构建响应
         Map<String, Object> result = new LinkedHashMap<>();
-        // 生成消息 ID，格式与 Anthropic 官方一致
         result.put("id", response.getId() != null ? response.getId() : "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
         result.put("type", "message");
         result.put("role", "assistant");
         result.put("model", response.getModel());
 
-        String text = response.getContent() != null ? response.getContent() : "";
         List<Map<String, Object>> contentBlocks;
-        // 如果已有预构建的内容块，直接使用；否则创建默认文本块
         if (response.getContentBlocks() != null && !response.getContentBlocks().isEmpty()) {
             contentBlocks = response.getContentBlocks();
         } else {
+            String text = response.getContent() != null ? response.getContent() : "";
             Map<String, Object> block = new LinkedHashMap<>();
             block.put("type", "text");
             block.put("text", text);
             contentBlocks = List.of(block);
         }
         result.put("content", contentBlocks);
-        // 将统一停止原因映射为 Anthropic 格式
         result.put("stop_reason", mapFinishReason(response.getFinishReason()));
 
-        // Token 用量统计
         Map<String, Object> usage = new LinkedHashMap<>();
         usage.put("input_tokens", response.getPromptTokens());
         usage.put("output_tokens", response.getCompletionTokens());

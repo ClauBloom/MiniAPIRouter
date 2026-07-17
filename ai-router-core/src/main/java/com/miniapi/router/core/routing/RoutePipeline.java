@@ -423,7 +423,7 @@ public class RoutePipeline {
         /* 调用意图评估器进行 AI 意图分析 */
         String agentId = ctx.getAgentIdentity() != null ? ctx.getAgentIdentity().getAgentId() : null;
         IntentResult intentResult = intentEvaluator.evaluate(
-                candidates, ctx.getMessages(), rule.getIntentModel(), evalKey, ctx.getTenantId(), agentId);
+                candidates, ctx.getMessages(), ctx.getTools(), rule.getIntentModel(), evalKey, ctx.getTenantId(), agentId);
 
         if (intentResult == null) {
             return null;
