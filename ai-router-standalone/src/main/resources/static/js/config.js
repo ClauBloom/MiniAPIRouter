@@ -64,13 +64,44 @@ const Config = (() => {
         </div>
         <div class="flex items-center gap-8">
           <span class="badge ${k.status === 1 ? 'badge-green' : 'badge-gray'}">${k.status === 1 ? '启用' : '禁用'}</span>
-          <span class="badge ${k.health_status === 'healthy' ? 'badge-green' : k.health_status === 'down' ? 'badge-red' : k.health_status === 'degraded' ? 'badge-orange' : 'badge-gray'}">${escapeHtml(k.health_status)}</span>
+          <span class="badge ${healthBadgeClass(k.health_status)} badge-clickable" onclick="Config.checkHealth(${k.id}, this)" title="点击检测健康状态">${escapeHtml(k.health_status)}</span>
           <button class="btn btn-sm" onclick="Config.toggleKey(${k.id}, ${k.status === 1 ? 0 : 1})">${k.status === 1 ? '禁用' : '启用'}</button>
           <button class="btn btn-sm" onclick="Config.showKeyModal(${k.id})">编辑</button>
           <button class="btn btn-sm btn-danger" onclick="Config.deleteKey(${k.id})">删除</button>
         </div>
       </div>
     `).join('');
+  }
+
+  function healthBadgeClass(status) {
+    switch (status) {
+      case 'healthy': return 'badge-green';
+      case 'unhealthy': case 'down': return 'badge-red';
+      case 'checking': return 'badge-info';
+      default: return 'badge-gray';
+    }
+  }
+
+  async function checkHealth(id, badgeEl) {
+    const prevText = badgeEl.textContent;
+    badgeEl.textContent = 'checking';
+    badgeEl.className = 'badge badge-info badge-clickable';
+    badgeEl.onclick = null;
+    try {
+      const result = await API.post('/api/v1/config/api-keys/' + id + '/health-check');
+      const status = result.health_status || 'unknown';
+      badgeEl.textContent = status;
+      badgeEl.className = 'badge ' + healthBadgeClass(status) + ' badge-clickable';
+      badgeEl.title = result.detail || '点击检测健康状态';
+      badgeEl.onclick = () => Config.checkHealth(id, badgeEl);
+      const key = keys.find(k => k.id === id);
+      if (key) key.health_status = status;
+    } catch (e) {
+      badgeEl.textContent = prevText;
+      badgeEl.className = 'badge ' + healthBadgeClass(prevText) + ' badge-clickable';
+      badgeEl.onclick = () => Config.checkHealth(id, badgeEl);
+      showToast('检测失败: ' + e.message, 'error');
+    }
   }
 
   function renderRules() {
@@ -628,7 +659,7 @@ const Config = (() => {
     document.getElementById('modal-overlay').classList.remove('active');
   }
 
-  return { init, load, loadKeys, loadRules, loadIntents, showKeyModal, saveKey, deleteKey, toggleKey,
+  return { init, load, loadKeys, loadRules, loadIntents, showKeyModal, saveKey, deleteKey, toggleKey, checkHealth,
            showRuleModal, saveRule, deleteRule, toggleRule, showIntentModal, saveIntent, deleteIntent,
            resetIntentToDefault, addModelRow, addIntentTarget, removeIntentTarget, closeModal, onMatchTypeChange };
 })();

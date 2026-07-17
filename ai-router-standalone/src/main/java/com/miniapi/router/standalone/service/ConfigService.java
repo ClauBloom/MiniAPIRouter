@@ -12,6 +12,7 @@ import com.miniapi.router.core.routing.SessionRouteMemory;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
 import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.spi.RouteRuleRepository;
+import com.miniapi.router.core.streaming.UpstreamStreamClient;
 import com.miniapi.router.standalone.entity.ApiKeyConfigDO;
 import com.miniapi.router.standalone.entity.IntentConfigDO;
 import com.miniapi.router.standalone.entity.RouteRuleDO;
@@ -43,11 +44,13 @@ public class ConfigService {
     private final FailureTracker failureTracker;          // 失败追踪器（配置变更后清除）
     private final SessionRouteMemory sessionRouteMemory;  // 会话路由内存（配置变更后清除）
     private final ModelConfigRepository modelConfigRepository;
+    private final UpstreamStreamClient upstreamClient;
 
     public ConfigService(ApiKeyConfigRepository keyRepository, RouteRuleRepository ruleRepository,
                          ApiKeyConfigMapper apiKeyMapper, RouteRuleMapper ruleMapper,
                          IntentConfigMapper intentMapper, FailureTracker failureTracker,
-                         SessionRouteMemory sessionRouteMemory, ModelConfigRepository modelConfigRepository) {
+                         SessionRouteMemory sessionRouteMemory, ModelConfigRepository modelConfigRepository,
+                         UpstreamStreamClient upstreamClient) {
         this.keyRepository = keyRepository;
         this.ruleRepository = ruleRepository;
         this.apiKeyMapper = apiKeyMapper;
@@ -56,6 +59,7 @@ public class ConfigService {
         this.failureTracker = failureTracker;
         this.sessionRouteMemory = sessionRouteMemory;
         this.modelConfigRepository = modelConfigRepository;
+        this.upstreamClient = upstreamClient;
     }
 
     // ===== API Key 配置管理 =====
@@ -123,6 +127,77 @@ public class ConfigService {
     public void updateKeyStatus(Long id, int status) {
         keyRepository.updateStatus(id, TENANT_ID, status);
         failureTracker.clearAll(); sessionRouteMemory.clearAll();
+    }
+
+    /**
+     * 对指定 API Key 执行健康检测。
+     * 从模型映射中任选一个模型，发送简短测试提示词，根据响应判定健康状态。
+     *
+     * @param id API Key ID
+     * @return 检测结果，包含 health_status 和 detail
+     */
+    public Map<String, Object> healthCheck(Long id) {
+        ApiKeyConfig config = keyRepository.findById(id);
+        if (config == null) throw new RouterException("RESOURCE_NOT_FOUND", "Key not found", 404);
+
+        // 标记为 checking
+        keyRepository.updateHealthStatus(id, "checking");
+
+        String protocol = config.getProtocol() != null ? config.getProtocol() : "openai";
+        Map<String, String> modelMapping = config.getModelMapping();
+        String testModel = null;
+        if (modelMapping != null && !modelMapping.isEmpty()) {
+            // 任选第一个模型
+            testModel = modelMapping.values().iterator().next();
+        }
+
+        String detail;
+        String finalStatus;
+
+        if (testModel == null) {
+            finalStatus = "unhealthy";
+            detail = "未配置模型，无法检测";
+        } else {
+            String path = "anthropic".equalsIgnoreCase(protocol) ? "/v1/messages" : "/v1/chat/completions";
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", testModel);
+            body.put("max_tokens", 5);
+            if ("anthropic".equalsIgnoreCase(protocol)) {
+                body.put("messages", List.of(Map.of("role", "user", "content", "Hi")));
+            } else {
+                body.put("messages", List.of(Map.of("role", "user", "content", "Hi")));
+                body.put("stream", false);
+            }
+
+            try {
+                UpstreamStreamClient.NonStreamResult result = upstreamClient.callUpstream(config, path, body);
+                int code = result.statusCode();
+                if (code >= 200 && code < 300) {
+                    finalStatus = "healthy";
+                    detail = "HTTP " + code;
+                } else {
+                    finalStatus = "unhealthy";
+                    detail = "HTTP " + code + ": " + truncate(result.body(), 200);
+                }
+            } catch (Exception e) {
+                finalStatus = "unhealthy";
+                detail = truncate(e.getMessage(), 200);
+            }
+        }
+
+        keyRepository.updateHealthStatus(id, finalStatus);
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("id", id);
+        resp.put("health_status", finalStatus);
+        resp.put("detail", detail);
+        return resp;
+    }
+
+    /** 截断字符串到指定长度 */
+    private String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     /**
