@@ -18,6 +18,9 @@ import java.util.Map;
 @Component
 public class AnthropicRequestConverter implements RequestConverter {
 
+    /** max_tokens 安全上限，与 OpenAI 转换器保持一致 */
+    private static final int MAX_TOKENS_UPPER_BOUND = 128000;
+
     @Override
     @SuppressWarnings("unchecked")
     public UnifiedRequest convert(Map<String, Object> rawRequest, String apiKey) {
@@ -35,7 +38,8 @@ public class AnthropicRequestConverter implements RequestConverter {
             req.setTemperature(((Number) rawRequest.get("temperature")).doubleValue());
         }
         if (rawRequest.get("max_tokens") != null) {
-            req.setMaxTokens(((Number) rawRequest.get("max_tokens")).intValue());
+            int val = ((Number) rawRequest.get("max_tokens")).intValue();
+            req.setMaxTokens(Math.min(val, MAX_TOKENS_UPPER_BOUND));
         }
         if (rawRequest.get("top_p") != null) {
             req.setTopP(((Number) rawRequest.get("top_p")).doubleValue());
