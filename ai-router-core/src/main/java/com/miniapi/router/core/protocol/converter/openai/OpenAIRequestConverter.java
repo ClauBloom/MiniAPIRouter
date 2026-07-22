@@ -23,6 +23,11 @@ public class OpenAIRequestConverter implements RequestConverter {
         this.reasoningCache = reasoningCache;
     }
 
+    /** max_tokens / max_completion_tokens 安全上限。
+     *  设为 128000 以兼容广泛的供应商限制（如 ByteDance/GLM 等），
+     *  避免因超过特定模型的 max_tokens 上限而导致上游 400 错误。 */
+    private static final int MAX_TOKENS_UPPER_BOUND = 128000;
+
     @Override
     @SuppressWarnings("unchecked")
     public UnifiedRequest convert(Map<String, Object> rawRequest, String apiKey) {
@@ -32,8 +37,15 @@ public class OpenAIRequestConverter implements RequestConverter {
         if (rawRequest.get("temperature") != null) {
             req.setTemperature(((Number) rawRequest.get("temperature")).doubleValue());
         }
-        if (rawRequest.get("max_tokens") != null) {
-            req.setMaxTokens(((Number) rawRequest.get("max_tokens")).intValue());
+        // 兼容 max_tokens 和 max_completion_tokens 两种参数名（OpenAI v2+ 使用后者）
+        Number maxTokensRaw = (Number) rawRequest.get("max_tokens");
+        if (maxTokensRaw == null) {
+            maxTokensRaw = (Number) rawRequest.get("max_completion_tokens");
+        }
+        if (maxTokensRaw != null) {
+            int val = maxTokensRaw.intValue();
+            // 保护性上限，防止异常大值导致上游 API 报错
+            req.setMaxTokens(Math.min(val, MAX_TOKENS_UPPER_BOUND));
         }
         if (rawRequest.get("top_p") != null) {
             req.setTopP(((Number) rawRequest.get("top_p")).doubleValue());
@@ -46,6 +58,7 @@ public class OpenAIRequestConverter implements RequestConverter {
         extra.remove("messages");
         extra.remove("temperature");
         extra.remove("max_tokens");
+        extra.remove("max_completion_tokens");
         extra.remove("top_p");
         extra.remove("tools");
         extra.remove("stream");
@@ -66,12 +79,21 @@ public class OpenAIRequestConverter implements RequestConverter {
         // 注入缓存的推理内容，确保推理链的连续性
         body.put("messages", injectReasoningContent(request.getMessages()));
         if (request.getTemperature() != null) body.put("temperature", request.getTemperature());
-        if (request.getMaxTokens() != null) body.put("max_tokens", request.getMaxTokens());
+        if (request.getMaxTokens() != null) {
+            // 上游使用 max_completion_tokens（OpenAI v2+ 推荐参数名）时转发对应名称，
+            // 否则使用传统 max_tokens
+            body.put("max_tokens", request.getMaxTokens());
+        }
         if (request.getTopP() != null) body.put("top_p", request.getTopP());
         if (request.getTools() != null) body.put("tools", request.getTools());
         body.put("stream", Boolean.TRUE.equals(request.getStream()));
-        // 合并额外参数（客户端可传 thinking 等参数）
-        if (request.getExtraParams() != null) body.putAll(request.getExtraParams());
+        // 合并额外参数（客户端可传 thinking 等参数），但排除已显式处理的字段防止意外覆盖
+        if (request.getExtraParams() != null) {
+            Map<String, Object> safeExtra = new LinkedHashMap<>(request.getExtraParams());
+            safeExtra.remove("max_tokens");
+            safeExtra.remove("max_completion_tokens");
+            body.putAll(safeExtra);
+        }
         // 当 assistant 消息缺少 reasoning_content 时禁用 thinking 模式，
         // 避免 DeepSeek 等推理模型报错 "reasoning_content must be passed back"
         disableThinkingIfReasoningIncomplete(body);
