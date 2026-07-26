@@ -40,7 +40,6 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:
       logic-delete-field: deleted
@@ -54,6 +53,7 @@ miniapi:
     blob-storage-path: ${user.home}/.miniapirouter/logs
     jwt-secret: ${SAAS_JWT_SECRET}
     jwt-expiration: 86400000
+    cors-allowed-origins: ${SAAS_CORS_ALLOWED_ORIGINS:}
 
 logging:
   level:

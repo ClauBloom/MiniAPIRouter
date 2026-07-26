@@ -2,9 +2,10 @@ package com.miniapi.router.saas.spiimpl;
 
 import com.miniapi.router.core.spi.RateLimiter;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
-import java.util.concurrent.TimeUnit;
+import java.util.List;
 
 /**
  * Redis 速率限制器
@@ -15,6 +16,14 @@ import java.util.concurrent.TimeUnit;
  */
 @Component
 public class RedisRateLimiter implements RateLimiter {
+
+    private static final DefaultRedisScript<Long> INCREMENT_AND_EXPIRE = new DefaultRedisScript<>("""
+            local count = redis.call('INCR', KEYS[1])
+            if count == 1 or redis.call('TTL', KEYS[1]) < 0 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
+            end
+            return count
+            """, Long.class);
 
     private final StringRedisTemplate redis;  // Redis 字符串模板
 
@@ -38,12 +47,11 @@ public class RedisRateLimiter implements RateLimiter {
     @Override
     public boolean tryAcquire(String key, int limit, int windowSeconds) {
         String redisKey = "rate_limit:" + key;
-        // 原子递增计数器
-        Long count = redis.opsForValue().increment(redisKey);
-        // 首次请求时设置过期时间（限流窗口）
-        if (count != null && count == 1) {
-            redis.expire(redisKey, windowSeconds, TimeUnit.SECONDS);
-        }
+        // Lua 将递增和首次设置过期时间合并为一次原子操作。
+        Long count = redis.execute(
+                INCREMENT_AND_EXPIRE,
+                List.of(redisKey),
+                Integer.toString(windowSeconds));
         return count != null && count <= limit;
     }
 

@@ -32,10 +32,11 @@ public class MybatisLogRepository implements LogRepository {
      */
     @Override
     public void save(RequestLogMeta meta) {
-        mapper.insert(toDO(meta));
+        RequestLogMetaDO dO = toDO(meta);
+        mapper.insert(dO);
         // 回写数据库生成的自增ID
         if (meta.getId() == null) {
-            meta.setId(toDO(meta).getId());
+            meta.setId(dO.getId());
         }
     }
 

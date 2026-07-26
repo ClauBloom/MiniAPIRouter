@@ -2,6 +2,8 @@ package com.miniapi.router.core.spi;
 
 import com.miniapi.router.core.domain.RouteRule;
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 路由规则存储仓库接口（SPI 扩展点）。
@@ -14,6 +16,17 @@ public interface RouteRuleRepository {
 
     /** 根据主键 ID 查询单条路由规则 */
     RouteRule findById(Long id);
+
+    /**
+     * 根据主键 ID 列表批量查询路由规则。
+     * <p>
+     * 默认实现逐条调用 {@link #findById(Long)}；实现方可覆写为单次批量查询以减少往返。
+     * </p>
+     */
+    default List<RouteRule> findByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        return ids.stream().map(this::findById).filter(Objects::nonNull).collect(Collectors.toList());
+    }
 
     /** 查询指定租户下所有路由规则 */
     List<RouteRule> findByTenantId(Long tenantId);

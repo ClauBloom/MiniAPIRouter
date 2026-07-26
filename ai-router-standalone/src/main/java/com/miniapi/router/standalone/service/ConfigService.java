@@ -2,17 +2,15 @@ package com.miniapi.router.standalone.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.miniapi.router.core.api.RouterCoreManagement;
 import com.miniapi.router.core.domain.ApiKeyConfig;
 import com.miniapi.router.core.domain.IntentConfig;
 import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.domain.RouteRule;
 import com.miniapi.router.core.exception.RouterException;
-import com.miniapi.router.core.routing.FailureTracker;
-import com.miniapi.router.core.routing.SessionRouteMemory;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
 import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.spi.RouteRuleRepository;
-import com.miniapi.router.core.streaming.UpstreamStreamClient;
 import com.miniapi.router.standalone.entity.ApiKeyConfigDO;
 import com.miniapi.router.standalone.entity.IntentConfigDO;
 import com.miniapi.router.standalone.entity.RouteRuleDO;
@@ -41,25 +39,20 @@ public class ConfigService {
     private final ApiKeyConfigMapper apiKeyMapper;        // API Key Mapper（直接操作数据库）
     private final RouteRuleMapper ruleMapper;             // 路由规则 Mapper
     private final IntentConfigMapper intentMapper;        // 意图配置 Mapper
-    private final FailureTracker failureTracker;          // 失败追踪器（配置变更后清除）
-    private final SessionRouteMemory sessionRouteMemory;  // 会话路由内存（配置变更后清除）
+    private final RouterCoreManagement coreManagement;    // Core 管理边界
     private final ModelConfigRepository modelConfigRepository;
-    private final UpstreamStreamClient upstreamClient;
 
     public ConfigService(ApiKeyConfigRepository keyRepository, RouteRuleRepository ruleRepository,
                          ApiKeyConfigMapper apiKeyMapper, RouteRuleMapper ruleMapper,
-                         IntentConfigMapper intentMapper, FailureTracker failureTracker,
-                         SessionRouteMemory sessionRouteMemory, ModelConfigRepository modelConfigRepository,
-                         UpstreamStreamClient upstreamClient) {
+                         IntentConfigMapper intentMapper, RouterCoreManagement coreManagement,
+                         ModelConfigRepository modelConfigRepository) {
         this.keyRepository = keyRepository;
         this.ruleRepository = ruleRepository;
         this.apiKeyMapper = apiKeyMapper;
         this.ruleMapper = ruleMapper;
         this.intentMapper = intentMapper;
-        this.failureTracker = failureTracker;
-        this.sessionRouteMemory = sessionRouteMemory;
+        this.coreManagement = coreManagement;
         this.modelConfigRepository = modelConfigRepository;
-        this.upstreamClient = upstreamClient;
     }
 
     // ===== API Key 配置管理 =====
@@ -82,7 +75,7 @@ public class ConfigService {
         if (config.getHealthStatus() == null) config.setHealthStatus("unknown");
         keyRepository.save(config);
         syncModelConfigs(config.getId(), TENANT_ID, config.getModelMapping());
-        failureTracker.clearAll(); sessionRouteMemory.clearAll(); // 清除路由缓存
+        coreManagement.invalidateRoutingState(); // 清除 Core 路由状态
         return toKeyResponse(keyRepository.findById(config.getId()));
     }
 
@@ -103,7 +96,7 @@ public class ConfigService {
         if (config.getApiKey() == null) config.setApiKeyEnc(existing.getApiKeyEnc());
         keyRepository.update(config);
         syncModelConfigs(id, TENANT_ID, config.getModelMapping());
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
         return toKeyResponse(keyRepository.findById(id));
     }
 
@@ -115,7 +108,7 @@ public class ConfigService {
     public void deleteKey(Long id) {
         modelConfigRepository.deleteByApiKeyId(id);
         keyRepository.delete(id, TENANT_ID);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
     }
 
     /**
@@ -126,7 +119,7 @@ public class ConfigService {
      */
     public void updateKeyStatus(Long id, int status) {
         keyRepository.updateStatus(id, TENANT_ID, status);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
     }
 
     /**
@@ -143,48 +136,9 @@ public class ConfigService {
         // 标记为 checking
         keyRepository.updateHealthStatus(id, "checking");
 
-        String protocol = config.getProtocol() != null ? config.getProtocol() : "openai";
-        Map<String, String> modelMapping = config.getModelMapping();
-        String testModel = null;
-        if (modelMapping != null && !modelMapping.isEmpty()) {
-            // 任选第一个模型
-            testModel = modelMapping.values().iterator().next();
-        }
-
-        String detail;
-        String finalStatus;
-
-        if (testModel == null) {
-            finalStatus = "unhealthy";
-            detail = "未配置模型，无法检测";
-        } else {
-            String path = "anthropic".equalsIgnoreCase(protocol) ? "/v1/messages" : "/v1/chat/completions";
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("model", testModel);
-            body.put("max_tokens", 5);
-            if ("anthropic".equalsIgnoreCase(protocol)) {
-                body.put("messages", List.of(Map.of("role", "user", "content", "Hi")));
-            } else {
-                body.put("messages", List.of(Map.of("role", "user", "content", "Hi")));
-                body.put("stream", false);
-            }
-
-            try {
-                UpstreamStreamClient.NonStreamResult result = upstreamClient.callUpstream(config, path, body);
-                int code = result.statusCode();
-                if (code >= 200 && code < 300) {
-                    finalStatus = "healthy";
-                    detail = "HTTP " + code;
-                } else {
-                    finalStatus = "unhealthy";
-                    detail = "HTTP " + code + ": " + truncate(result.body(), 200);
-                }
-            } catch (Exception e) {
-                finalStatus = "unhealthy";
-                detail = truncate(e.getMessage(), 200);
-            }
-        }
-
+        RouterCoreManagement.HealthCheckResult result = coreManagement.checkHealth(config);
+        String finalStatus = result.status();
+        String detail = result.detail();
         keyRepository.updateHealthStatus(id, finalStatus);
 
         Map<String, Object> resp = new LinkedHashMap<>();
@@ -192,12 +146,6 @@ public class ConfigService {
         resp.put("health_status", finalStatus);
         resp.put("detail", detail);
         return resp;
-    }
-
-    /** 截断字符串到指定长度 */
-    private String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     /**
@@ -316,7 +264,7 @@ public class ConfigService {
         if (rule.getPriority() == null) rule.setPriority(0);
         if (rule.getEnabled() == null) rule.setEnabled(true);
         ruleRepository.save(rule);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
         return toRuleResponse(ruleRepository.findById(rule.getId()));
     }
 
@@ -333,7 +281,7 @@ public class ConfigService {
         rule.setId(id);
         rule.setTenantId(TENANT_ID);
         ruleRepository.update(rule);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
         return toRuleResponse(ruleRepository.findById(id));
     }
 
@@ -344,7 +292,7 @@ public class ConfigService {
      */
     public void deleteRule(Long id) {
         ruleRepository.delete(id, TENANT_ID);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
     }
 
     /**
@@ -355,7 +303,7 @@ public class ConfigService {
      */
     public void updateRuleEnabled(Long id, boolean enabled) {
         ruleRepository.updateEnabled(id, TENANT_ID, enabled);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
     }
 
     /**
@@ -476,7 +424,7 @@ public class ConfigService {
         dO.setIsDefault(0);   // 新建的意图不是默认意图
         dO.setCustomized(0);  // 新建的意图未被自定义
         intentMapper.insert(dO);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
         return toIntentResponse(intentMapper.selectById(dO.getId()));
     }
 
@@ -510,7 +458,7 @@ public class ConfigService {
             dO.setCustomized(1);
             intentMapper.updateById(dO);
         }
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
         return toIntentResponse(intentMapper.selectById(id));
     }
 
@@ -527,7 +475,7 @@ public class ConfigService {
             throw new RouterException("CANNOT_DELETE_DEFAULT", "默认意图路由不允许删除", 400);
         }
         intentMapper.deleteById(id);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
     }
 
     /**
@@ -551,7 +499,7 @@ public class ConfigService {
         existing.setModelWeights(dft.getModelWeights());
         existing.setCustomized(0);
         intentMapper.updateById(existing);
-        failureTracker.clearAll(); sessionRouteMemory.clearAll();
+        coreManagement.invalidateRoutingState();
     }
 
     /**

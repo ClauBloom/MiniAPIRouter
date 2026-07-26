@@ -51,9 +51,22 @@ public class AuthService {
      * @throws RouterException 当用户名或密码错误（401）、用户被禁用（403）或租户被禁用（403）时抛出
      */
     public Map<String, Object> login(String username, String password, String tenantCode) {
-        // 根据用户名查询用户
+        // 租户用户必须先通过租户编码解析租户；未提供编码时只查询平台租户（ID=0）。
+        TenantDO requestedTenant = null;
+        Long requestedTenantId = 0L;
+        if (tenantCode != null && !tenantCode.isBlank()) {
+            requestedTenant = tenantMapper.selectOne(new LambdaQueryWrapper<TenantDO>()
+                    .eq(TenantDO::getTenantCode, tenantCode.trim()));
+            if (requestedTenant == null) {
+                throw new RouterException("UNAUTHORIZED", "用户名或密码错误", 401);
+            }
+            requestedTenantId = requestedTenant.getId();
+        }
+
+        // 用户名允许在不同租户重复，因此必须同时限定 tenant_id。
         LambdaQueryWrapper<SysUserDO> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(SysUserDO::getUsername, username);
+        wrapper.eq(SysUserDO::getUsername, username)
+                .eq(SysUserDO::getTenantId, requestedTenantId);
         SysUserDO user = userMapper.selectOne(wrapper);
 
         // 验证用户存在性和密码正确性
@@ -69,7 +82,7 @@ public class AuthService {
         Long tenantId = user.getTenantId();
         String tenantName = "";
         if (tenantId != null && tenantId > 0) {
-            TenantDO tenant = tenantMapper.selectById(tenantId);
+            TenantDO tenant = requestedTenant != null ? requestedTenant : tenantMapper.selectById(tenantId);
             if (tenant != null) {
                 tenantName = tenant.getTenantName();
                 // 检查租户是否被禁用

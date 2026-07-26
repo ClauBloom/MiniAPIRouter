@@ -11,8 +11,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-
 /**
  * 数据初始化器，在应用启动时自动执行。
  * 
@@ -32,10 +30,10 @@ public class DataInitializer implements CommandLineRunner {
     private final SysUserMapper userMapper;        // 系统用户表 Mapper，用于操作用户数据
     private final PasswordEncoder passwordEncoder; // 密码编码器，用于加密用户密码
 
-    @Value("${SAAS_ADMIN_DEFAULT_PASSWORD:admin123}")
+    @Value("${SAAS_ADMIN_DEFAULT_PASSWORD:}")
     private String adminDefaultPassword; // 超级管理员的默认密码，可通过环境变量覆盖
 
-    @Value("${SAAS_DEMO_ADMIN_DEFAULT_PASSWORD:demo123}")
+    @Value("${SAAS_DEMO_ADMIN_DEFAULT_PASSWORD:}")
     private String demoAdminDefaultPassword; // 演示租户管理员的默认密码，可通过环境变量覆盖
 
     /**
@@ -62,8 +60,13 @@ public class DataInitializer implements CommandLineRunner {
         // === 创建超级管理员账户 ===
         // 检查是否已存在用户名为 admin 的账户，不存在则创建
         LambdaQueryWrapper<SysUserDO> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(SysUserDO::getUsername, "admin");
+        wrapper.eq(SysUserDO::getUsername, "admin")
+                .eq(SysUserDO::getTenantId, 0L);
         if (userMapper.selectCount(wrapper) == 0) {
+            if (adminDefaultPassword == null || adminDefaultPassword.isBlank()) {
+                throw new IllegalStateException(
+                        "SAAS_ADMIN_DEFAULT_PASSWORD must be set when the platform admin does not exist");
+            }
             SysUserDO admin = new SysUserDO();
             admin.setTenantId(0L);                                    // 租户ID为0，表示平台级别的超级管理员
             admin.setUsername("admin");
@@ -72,7 +75,7 @@ public class DataInitializer implements CommandLineRunner {
             admin.setRole("super_admin");                              // 角色为超级管理员
             admin.setStatus(1);                                        // 状态为启用
             userMapper.insert(admin);
-            log.info("Created super admin: admin / {}", adminDefaultPassword);
+            log.info("Created default super admin account: admin");
         }
 
         // === 创建演示租户及其管理员 ===
@@ -80,6 +83,10 @@ public class DataInitializer implements CommandLineRunner {
         LambdaQueryWrapper<TenantDO> tenantWrapper = new LambdaQueryWrapper<>();
         tenantWrapper.eq(TenantDO::getTenantCode, "demo");
         if (tenantMapper.selectCount(tenantWrapper) == 0) {
+            if (demoAdminDefaultPassword == null || demoAdminDefaultPassword.isBlank()) {
+                log.info("Demo tenant bootstrap skipped: SAAS_DEMO_ADMIN_DEFAULT_PASSWORD is not set");
+                return;
+            }
             // 创建演示租户
             TenantDO tenant = new TenantDO();
             tenant.setTenantCode("demo");
@@ -102,7 +109,7 @@ public class DataInitializer implements CommandLineRunner {
             tenantAdmin.setRole("tenant_admin");       // 角色为租户管理员
             tenantAdmin.setStatus(1);
             userMapper.insert(tenantAdmin);
-            log.info("Created tenant admin: demo_admin / {}", demoAdminDefaultPassword);
+            log.info("Created default tenant admin account: demo_admin");
         }
     }
 }

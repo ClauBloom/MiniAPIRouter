@@ -1,6 +1,8 @@
 package com.miniapi.router.core.streaming;
 
 import com.miniapi.router.core.domain.ApiKeyConfig;
+import com.miniapi.router.core.exception.UpstreamException;
+import com.miniapi.router.core.spi.UpstreamClient;
 import com.miniapi.router.core.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,7 +26,7 @@ import java.util.*;
  * 内置空闲超时机制和认证头注入。
  */
 @Component
-public class UpstreamStreamClient {
+public class UpstreamStreamClient implements UpstreamClient {
 
     private static final Logger log = LoggerFactory.getLogger(UpstreamStreamClient.class);
 
@@ -35,7 +37,20 @@ public class UpstreamStreamClient {
             .build();
 
     /** 非流式请求结果 */
+    /** @deprecated 使用与传输实现无关的 {@link UpstreamClient.Response}。 */
+    @Deprecated
     public record NonStreamResult(int statusCode, String body, Map<String, String> headers) {}
+
+    @Override
+    public Response call(ApiKeyConfig key, String path, Map<String, Object> body) {
+        NonStreamResult result = callUpstream(key, path, body);
+        return new Response(result.statusCode(), result.body(), result.headers());
+    }
+
+    @Override
+    public BufferedReader stream(ApiKeyConfig key, String path, Map<String, Object> body) {
+        return streamUpstream(key, path, body);
+    }
 
     /**
      * 发起非流式上游调用（同步，一次性返回完整响应体）。
@@ -73,7 +88,8 @@ public class UpstreamStreamClient {
             return new NonStreamResult(status, respBody, headers);
         } catch (Exception e) {
             log.warn("[Upstream] <<< {} FAILED: {}", key.getProvider(), e.getMessage());
-            throw new RuntimeException("Upstream call failed: " + e.getMessage(), e);
+            /* 状态码未知（0）：连接失败/超时等网络层错误，归类为可回退 */
+            throw new UpstreamException("Upstream call failed: " + e.getMessage(), 0);
         }
     }
 
@@ -117,18 +133,19 @@ public class UpstreamStreamClient {
                 }
                 String truncated = errBody != null && errBody.length() > 500 ? errBody.substring(0, 500) : errBody;
                 log.warn("[Upstream] <<< {} ERROR body={}", key.getProvider(), truncated);
-                throw new RuntimeException("Upstream returned " + status + ": " + errBody);
+                /* 携带上游状态码抛出，供 StreamProxy 判定是否可回退 */
+                throw new UpstreamException("Upstream returned " + status + ": " + truncated, status);
             }
             /* 包装为带空闲超时的 InputStream */
             InputStream idleStream = new IdleTimeoutInputStream(response.body(), idleTimeoutMs);
             return new BufferedReader(new InputStreamReader(idleStream, StandardCharsets.UTF_8));
         } catch (IOException e) {
             log.warn("[Upstream] <<< {} FAILED: {}", key.getProvider(), e.getMessage());
-            throw new RuntimeException("Stream upstream failed: " + e.getMessage(), e);
+            throw new UpstreamException("Stream upstream failed: " + e.getMessage(), 0);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("[Upstream] <<< {} INTERRUPTED", key.getProvider());
-            throw new RuntimeException("Stream upstream interrupted", e);
+            throw new UpstreamException("Stream upstream interrupted", 0);
         }
     }
 

@@ -4,13 +4,20 @@ import com.miniapi.router.saas.context.TenantContext;
 import com.miniapi.router.saas.dto.response.ApiResponse;
 import com.miniapi.router.saas.entity.TenantDO;
 import com.miniapi.router.saas.mapper.TenantMapper;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.miniapi.router.core.util.JsonUtils;
+import com.miniapi.router.saas.security.ProxyKeyUtils;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -23,7 +30,10 @@ import java.util.concurrent.TimeUnit;
  */
 @RestController
 @RequestMapping("/api/v1/tenant/proxy-keys")
+@PreAuthorize("hasRole('TENANT_ADMIN')")
 public class ProxyApiKeyController {
+
+    private static final int SCAN_BATCH_SIZE = 500;
 
     private final TenantMapper tenantMapper;      // 租户 Mapper，用于查询租户信息
     private final StringRedisTemplate redis;      // Redis 操作模板，用于存储代理 API Key
@@ -66,22 +76,27 @@ public class ProxyApiKeyController {
         String randomPart = HexFormat.of().formatHex(bytes);
         // 拼接完整的 API Key：sk-miniapi-{租户编码}-{随机部分}
         String apiKey = "sk-miniapi-" + tenant.getTenantCode() + "-" + randomPart;
-        // 将代理 Key 存入 Redis，Key 格式为 proxykey:{租户编码}:{随机部分}，值为租户ID
-        redis.opsForValue().set("proxykey:" + tenant.getTenantCode() + ":" + randomPart,
-                String.valueOf(tenantId), 365, TimeUnit.DAYS);
+        LocalDateTime createdAt = LocalDateTime.now();
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("tenant_id", tenantId);
+        metadata.put("suffix", randomPart.substring(randomPart.length() - 4));
+        metadata.put("created_at", createdAt.toString());
+        // Redis Key 仅包含随机部分摘要；完整代理 Key 只在本次响应中返回。
+        redis.opsForValue().set(ProxyKeyUtils.redisKey(tenant.getTenantCode(), randomPart),
+                JsonUtils.toJson(metadata), 365, TimeUnit.DAYS);
 
         // 构建返回结果
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("api_key", apiKey);
         result.put("tenant_code", tenant.getTenantCode());
-        result.put("created_at", java.time.LocalDateTime.now());
+        result.put("created_at", createdAt);
         return ApiResponse.success(result);
     }
 
     /**
      * 查询当前租户的所有代理 API Key 列表。
-     * <p>从 Redis 中匹配该租户的所有代理 Key，返回完整 Key 和脱敏 Key。
-     * 脱敏格式仅显示随机部分的最后 4 位字符。
+     * <p>从 Redis 中匹配该租户的代理 Key，仅返回脱敏 Key。
+     * 完整 Key 只在创建时展示一次。
      *
      * @return 包含 API Key 列表的统一响应
      */
@@ -90,20 +105,53 @@ public class ProxyApiKeyController {
         Long tenantId = TenantContext.getTenantId();
         TenantDO tenant = tenantMapper.selectById(tenantId);
         if (tenant == null) return ApiResponse.error(404, "Tenant not found");
-        // 使用通配符匹配该租户在 Redis 中的所有代理 Key
-        java.util.Set<String> keys = redis.keys("proxykey:" + tenant.getTenantCode() + ":*");
-        java.util.List<Map<String, Object>> list = new java.util.ArrayList<>();
-        if (keys != null) {
-            for (String k : keys) {
-                // 从 Redis Key 中提取随机部分
-                String randomPart = k.substring(k.lastIndexOf(":") + 1);
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("api_key", "sk-miniapi-" + tenant.getTenantCode() + "-" + randomPart);
-                // 生成脱敏的 API Key，仅显示最后 4 位
-                m.put("api_key_masked", "sk-miniapi-" + tenant.getTenantCode() + "-..." + randomPart.substring(randomPart.length() - 4));
-                list.add(m);
+        List<Map<String, Object>> list = new ArrayList<>();
+
+        List<String> v2Keys = scanKeys("proxykey:v2:" + tenant.getTenantCode() + ":*");
+        if (!v2Keys.isEmpty()) {
+            List<String> values = redis.opsForValue().multiGet(v2Keys);
+            if (values != null) {
+                for (String value : values) {
+                    if (value == null) continue;
+                    try {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> metadata = JsonUtils.fromJson(value, Map.class);
+                        Object suffixValue = metadata.get("suffix");
+                        if (!(suffixValue instanceof String suffix) || suffix.length() != 4) continue;
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        item.put("api_key_masked", ProxyKeyUtils.masked(tenant.getTenantCode(), suffix));
+                        item.put("created_at", metadata.get("created_at"));
+                        list.add(item);
+                    } catch (RuntimeException ignored) {
+                        // 跳过损坏或旧格式的元数据，不影响其余 Key 列表。
+                    }
+                }
             }
         }
+
+        // 兼容迁移前的 Key；只从旧索引提取末四位，不再返回完整密钥。
+        for (String key : scanKeys("proxykey:" + tenant.getTenantCode() + ":*")) {
+            String randomPart = key.substring(key.lastIndexOf(":") + 1);
+            if (randomPart.length() < 4) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("api_key_masked", ProxyKeyUtils.masked(
+                    tenant.getTenantCode(), randomPart.substring(randomPart.length() - 4)));
+            list.add(item);
+        }
         return ApiResponse.success(list);
+    }
+
+    private List<String> scanKeys(String pattern) {
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(pattern)
+                .count(SCAN_BATCH_SIZE)
+                .build();
+        List<String> keys = new ArrayList<>();
+        try (Cursor<String> cursor = redis.scan(options)) {
+            while (cursor.hasNext()) {
+                keys.add(cursor.next());
+            }
+        }
+        return keys;
     }
 }

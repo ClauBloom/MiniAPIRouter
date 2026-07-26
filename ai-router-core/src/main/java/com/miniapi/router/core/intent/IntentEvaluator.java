@@ -8,7 +8,7 @@ import com.miniapi.router.core.domain.IntentConfig;
 import com.miniapi.router.core.domain.ModelConfig;
 import com.miniapi.router.core.spi.IntentCatalogProvider;
 import com.miniapi.router.core.spi.ModelConfigRepository;
-import com.miniapi.router.core.streaming.UpstreamStreamClient;
+import com.miniapi.router.core.spi.UpstreamClient;
 import com.miniapi.router.core.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,8 +42,8 @@ public class IntentEvaluator {
             .maximumSize(10_000)
             .build();
 
-    /** 上游大模型流式客户端 */
-    private final UpstreamStreamClient upstreamClient;
+    /** 上游模型调用端口 */
+    private final UpstreamClient upstreamClient;
     /** 提示词模板，用于构建意图评估的 system/user 提示 */
     private final PromptTemplate promptTemplate;
     /** 意图目录提供者，获取租户配置的意图分类列表 */
@@ -51,7 +51,7 @@ public class IntentEvaluator {
     /** 模型配置仓储，用于按模型名查找所属 Key 和真实模型名 */
     private final ModelConfigRepository modelConfigRepository;
 
-    public IntentEvaluator(UpstreamStreamClient upstreamClient, PromptTemplate promptTemplate,
+    public IntentEvaluator(UpstreamClient upstreamClient, PromptTemplate promptTemplate,
                            IntentCatalogProvider catalogProvider,
                            ModelConfigRepository modelConfigRepository) {
         this.upstreamClient = upstreamClient;
@@ -119,6 +119,24 @@ public class IntentEvaluator {
             return cached;
         }
 
+        /*
+         * singleflight 语义：相同 cacheKey 的并发请求只触发一次上游评估调用，
+         * 其余请求阻塞等待并共享同一结果，避免重复消耗评估模型的 Token 与时延。
+         * loader 返回 null 时不写入缓存（评估失败不缓存，下次重试）。
+         */
+        return intentCache.get(cacheKey, key -> evaluateUncached(
+                candidates, intentModel, evalKey, catalog,
+                userQuestion, priorUserQuestions, toolsSummary, agentActivity));
+    }
+
+    /**
+     * 真正执行一次意图评估调用（无缓存）。
+     * 返回非 null 的结果会被调用方写入缓存；返回 null 表示评估失败或结果不可缓存。
+     */
+    private IntentResult evaluateUncached(List<ApiKeyConfig> candidates, String intentModel,
+                                          ApiKeyConfig evalKey, List<IntentConfig> catalog,
+                                          String userQuestion, String priorUserQuestions,
+                                          String toolsSummary, String agentActivity) {
         // 构建意图识别模型的 system 提示和 user 提示
         String systemPrompt = promptTemplate.buildSystemPrompt(catalog);
         String userPrompt = promptTemplate.buildUserPrompt(candidates, userQuestion,
@@ -146,9 +164,6 @@ public class IntentEvaluator {
                 if (isAgentActive) {
                     // Agent 正在修改代码时的追问/继续，保底 30 分（确保不低于最便宜模型）
                     result.setScore(Math.max(30, result.getScore()));
-                    if (result.getIntent() != null) {
-                        intentCache.put(cacheKey, result);
-                    }
                     log.info("[IntentEval] Special intent '{}' but agent active, score adjusted to {}",
                             result.getIntent(), result.getScore());
                     return result;
@@ -157,12 +172,13 @@ public class IntentEvaluator {
                 log.info("[IntentEval] Special intent '{}' detected, marking for pipeline fallback",
                         result.getIntent());
                 result.setSpecialIntent(true);
-                intentCache.put(cacheKey, result);
                 return result;
             }
 
-            if (result.getIntent() != null) {
-                intentCache.put(cacheKey, result);
+            if (result.getIntent() == null) {
+                // 无意图标签的结果不可缓存，等价于评估失败（管线走降级路径）
+                log.debug("[IntentEval] Result without intent label, not cached");
+                return null;
             }
 
             log.info("[IntentEval] >> Intent={} | score={} | reasoning={} | model={} | key_id={}",
@@ -199,7 +215,7 @@ public class IntentEvaluator {
         body.put("response_format", Map.of("type", "json_object"));
 
         try {
-            UpstreamStreamClient.NonStreamResult result = upstreamClient.callUpstream(evalKey, "/v1/chat/completions", body);
+            UpstreamClient.Response result = upstreamClient.call(evalKey, "/v1/chat/completions", body);
 
             if (result.statusCode() != 200) {
                 log.warn("[IntentEval] Intent model returned status={}, body={}",

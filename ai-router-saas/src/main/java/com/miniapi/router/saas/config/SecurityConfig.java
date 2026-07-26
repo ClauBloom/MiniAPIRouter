@@ -1,7 +1,6 @@
 package com.miniapi.router.saas.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.miniapi.router.saas.security.ApiKeyAuthService;
 import com.miniapi.router.saas.security.JwtAuthenticationFilter;
 import com.miniapi.router.saas.security.JwtTokenProvider;
 import jakarta.servlet.http.HttpServletResponse;
@@ -9,6 +8,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
@@ -30,6 +31,7 @@ import java.util.Map;
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
     /**
@@ -38,15 +40,14 @@ public class SecurityConfig {
      *
      * @param http              HttpSecurity 构建器
      * @param jwtTokenProvider  JWT Token 生成与验证工具
-     * @param apiKeyAuthService API Key 认证服务（用于代理请求认证）
      * @return 构建完成的安全过滤链
      * @throws Exception 配置异常
      */
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, JwtTokenProvider jwtTokenProvider,
-                                           ApiKeyAuthService apiKeyAuthService) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, JwtTokenProvider jwtTokenProvider) throws Exception {
         http
             .csrf(csrf -> csrf.disable()) // 禁用 CSRF 保护，前后端分离架构使用 Token 认证
+            .cors(Customizer.withDefaults())
             // 使用无状态会话策略，不创建 HttpSession，完全依赖 JWT Token
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth

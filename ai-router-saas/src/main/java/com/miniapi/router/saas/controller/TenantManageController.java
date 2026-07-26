@@ -22,6 +22,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/v1/admin/tenants")
+@PreAuthorize("hasRole('SUPER_ADMIN')")
 public class TenantManageController {
 
     private final TenantService tenantService; // 租户管理服务

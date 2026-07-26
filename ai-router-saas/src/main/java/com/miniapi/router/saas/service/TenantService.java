@@ -8,10 +8,9 @@ import com.miniapi.router.saas.dto.request.TenantCreateRequest;
 import com.miniapi.router.saas.dto.response.PageResult;
 import com.miniapi.router.saas.entity.TenantDO;
 import com.miniapi.router.saas.mapper.TenantMapper;
+import com.miniapi.router.saas.util.IsoDateTimeParser;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,8 +60,7 @@ public class TenantService {
         tenant.setStatus(1);
         // 解析过期时间字符串
         if (req.getExpiresAt() != null) {
-            tenant.setExpiresAt(LocalDateTime.parse(req.getExpiresAt().replace("Z", ""),
-                    DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            tenant.setExpiresAt(IsoDateTimeParser.parse(req.getExpiresAt()));
         }
         tenantMapper.insert(tenant);
         return toResponse(tenant);
@@ -120,8 +118,7 @@ public class TenantService {
         if (req.getQuotaLimit() != null) tenant.setQuotaLimit(req.getQuotaLimit());
         if (req.getMaxRps() != null) tenant.setMaxRps(req.getMaxRps());
         if (req.getExpiresAt() != null) {
-            tenant.setExpiresAt(LocalDateTime.parse(req.getExpiresAt().replace("Z", ""),
-                    DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            tenant.setExpiresAt(IsoDateTimeParser.parse(req.getExpiresAt()));
         }
         tenantMapper.updateById(tenant);
         return toResponse(tenant);

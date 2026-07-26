@@ -8,14 +8,15 @@ import com.miniapi.router.core.exception.RouterException;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
 import com.miniapi.router.core.spi.ModelConfigRepository;
 import com.miniapi.router.core.util.CryptoUtils;
-import com.miniapi.router.core.util.TraceUtils;
 import com.miniapi.router.saas.context.TenantContext;
 import com.miniapi.router.saas.dto.request.ApiKeyConfigRequest;
 import com.miniapi.router.saas.dto.response.PageResult;
 import com.miniapi.router.saas.entity.ApiKeyConfigDO;
 import com.miniapi.router.saas.mapper.ApiKeyConfigMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +29,7 @@ import java.util.stream.Collectors;
  * 每个配置代表一个上游提供商的 API Key，包含提供商信息、协议类型、优先级、并发限制等参数。
  * </p>
  * <p>
- * 所有操作都基于当前租户上下文，确保数据隔离。
+ * 所有操作都基于当前租户上下文并校验资源归属，确保数据隔离。
  * </p>
  */
 @Service
@@ -53,6 +54,7 @@ public class ApiKeyConfigService {
      * @param req API Key 配置请求对象
      * @return 创建后的配置信息（脱敏后的 Map）
      */
+    @Transactional
     public Map<String, Object> create(ApiKeyConfigRequest req) {
         Long tenantId = TenantContext.getTenantId();
         ApiKeyConfig config = new ApiKeyConfig();
@@ -78,6 +80,9 @@ public class ApiKeyConfigService {
 
     /**
      * 分页查询 API Key 配置列表
+     * <p>
+     * 直接从分页结果构建响应，模型映射通过一次查询按 Key 分组加载，避免逐条回查（N+1）。
+     * </p>
      *
      * @param page         页码
      * @param pageSize     每页条数
@@ -97,11 +102,18 @@ public class ApiKeyConfigService {
 
         Page<ApiKeyConfigDO> p = new Page<>(page, pageSize);
         Page<ApiKeyConfigDO> result = mapper.selectPage(p, wrapper);
-        // 通过仓库层逐条查询完整配置（包含解密后的 API Key），若查询失败则从 DO 直接转换
-        List<Map<String, Object>> list = result.getRecords().stream().map(dO -> {
-            ApiKeyConfig c = keyRepository.findById(dO.getId());
-            return c != null ? toResponse(c) : toResponseFromDO(dO);
-        }).collect(Collectors.toList());
+        // 只查询当前页 Key 的模型映射并按 Key 分组
+        List<Long> pageKeyIds = result.getRecords().stream()
+                .map(ApiKeyConfigDO::getId)
+                .collect(Collectors.toList());
+        Map<Long, Map<String, String>> mappingsByKey = new HashMap<>();
+        for (ModelConfig mc : modelConfigRepository.findByApiKeyIds(pageKeyIds)) {
+            mappingsByKey.computeIfAbsent(mc.getApiKeyId(), k -> new LinkedHashMap<>())
+                    .put(mc.getDisplayName(), mc.getRealName());
+        }
+        List<Map<String, Object>> list = result.getRecords().stream()
+                .map(dO -> toResponse(dO, mappingsByKey.get(dO.getId())))
+                .collect(Collectors.toList());
         return new PageResult<>(list, result.getTotal(), page, pageSize);
     }
 
@@ -116,13 +128,10 @@ public class ApiKeyConfigService {
      * @return 更新后的配置信息（脱敏后的 Map）
      * @throws RouterException 当配置不存在或不属于当前租户时抛出 404
      */
+    @Transactional
     public Map<String, Object> update(Long id, ApiKeyConfigRequest req) {
         Long tenantId = TenantContext.getTenantId();
-        ApiKeyConfig config = keyRepository.findById(id);
-        // 校验配置存在性及租户归属
-        if (config == null || !config.getTenantId().equals(tenantId)) {
-            throw new RouterException("RESOURCE_NOT_FOUND", "API Key 配置不存在", 404);
-        }
+        ApiKeyConfig config = requireOwned(id, tenantId);
         // 逐字段条件更新，仅更新非空字段
         if (req.getName() != null) config.setName(req.getName());
         if (req.getProvider() != null) config.setProvider(req.getProvider());
@@ -137,16 +146,22 @@ public class ApiKeyConfigService {
         if (req.getRetryCount() != null) config.setRetryCount(req.getRetryCount());
         keyRepository.update(config);
         syncModelConfigs(id, tenantId, config.getModelMapping());
-        return toResponse(keyRepository.findById(id));
+        return toResponse(config);
     }
 
     /**
      * 删除 API Key 配置
+     * <p>
+     * 先校验资源归属再删除，防止跨租户越权删除关联的模型配置。
+     * </p>
      *
      * @param id 配置ID
+     * @throws RouterException 当配置不存在或不属于当前租户时抛出 404
      */
+    @Transactional
     public void delete(Long id) {
         Long tenantId = TenantContext.getTenantId();
+        requireOwned(id, tenantId);
         modelConfigRepository.deleteByApiKeyId(id);
         keyRepository.delete(id, tenantId);
     }
@@ -156,9 +171,11 @@ public class ApiKeyConfigService {
      *
      * @param id      配置ID
      * @param enabled 是否启用
+     * @throws RouterException 当配置不存在或不属于当前租户时抛出 404
      */
     public void updateStatus(Long id, boolean enabled) {
         Long tenantId = TenantContext.getTenantId();
+        requireOwned(id, tenantId);
         keyRepository.updateStatus(id, tenantId, enabled ? 1 : 0);
     }
 
@@ -170,11 +187,10 @@ public class ApiKeyConfigService {
      *
      * @param id 配置ID
      * @return 健康检查结果
-     * @throws RouterException 当配置不存在时抛出 404
+     * @throws RouterException 当配置不存在或不属于当前租户时抛出 404
      */
     public Map<String, Object> healthCheck(Long id) {
-        ApiKeyConfig config = keyRepository.findById(id);
-        if (config == null) throw new RouterException("RESOURCE_NOT_FOUND", "配置不存在", 404);
+        ApiKeyConfig config = requireOwned(id, TenantContext.getTenantId());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", id);
         result.put("health_status", config.getHealthStatus() != null ? config.getHealthStatus() : "unknown");
@@ -183,28 +199,48 @@ public class ApiKeyConfigService {
     }
 
     /**
+     * 校验配置存在且属于指定租户，否则抛出 404。
+     *
+     * @param id       配置ID
+     * @param tenantId 租户ID
+     * @return API Key 配置领域对象
+     */
+    private ApiKeyConfig requireOwned(Long id, Long tenantId) {
+        ApiKeyConfig config = keyRepository.findById(id);
+        if (config == null || !config.getTenantId().equals(tenantId)) {
+            throw new RouterException("RESOURCE_NOT_FOUND", "API Key 配置不存在", 404);
+        }
+        return config;
+    }
+
+    /**
      * 将 Key 的 modelMapping 同步到 model_config 表。
-     * 先删除该 Key 下的所有旧模型，再逐条插入新模型。
-     * 校验对外模型名在租户内唯一。
+     * 先批量校验对外模型名在租户内唯一（单次查询），校验通过后再删除旧数据并插入新数据，
+     * 避免校验失败时旧数据已被删除的部分写入问题。
      *
      * @param keyId        API Key ID
      * @param tenantId     租户 ID
      * @param modelMapping 模型映射（对外名 -> 真实名）
      */
     private void syncModelConfigs(Long keyId, Long tenantId, Map<String, String> modelMapping) {
+        if (modelMapping != null && !modelMapping.isEmpty()) {
+            // 一次性加载租户内全部模型名归属，批量校验唯一性
+            Map<String, Long> ownerByDisplayName = modelConfigRepository.findByTenantId(tenantId).stream()
+                    .collect(Collectors.toMap(ModelConfig::getDisplayName, ModelConfig::getApiKeyId, (a, b) -> a));
+            for (String displayName : modelMapping.keySet()) {
+                Long ownerKeyId = ownerByDisplayName.get(displayName);
+                if (ownerKeyId != null && !ownerKeyId.equals(keyId)) {
+                    throw new RouterException("MODEL_NAME_DUPLICATE",
+                            "对外模型名 '" + displayName + "' 已被其他 Key 使用", 409);
+                }
+            }
+        }
         modelConfigRepository.deleteByApiKeyId(keyId);
         if (modelMapping == null || modelMapping.isEmpty()) return;
         for (Map.Entry<String, String> entry : modelMapping.entrySet()) {
-            String displayName = entry.getKey();
-            // 唯一性校验：检查租户内是否已有其他 Key 使用此模型名
-            ModelConfig existing = modelConfigRepository.findByDisplayName(tenantId, displayName);
-            if (existing != null && !existing.getApiKeyId().equals(keyId)) {
-                throw new RouterException("MODEL_NAME_DUPLICATE",
-                        "对外模型名 '" + displayName + "' 已被其他 Key 使用", 409);
-            }
             ModelConfig mc = new ModelConfig();
             mc.setTenantId(tenantId);
-            mc.setDisplayName(displayName);
+            mc.setDisplayName(entry.getKey());
             mc.setRealName(entry.getValue());
             mc.setApiKeyId(keyId);
             modelConfigRepository.save(mc);
@@ -248,38 +284,41 @@ public class ApiKeyConfigService {
     }
 
     /**
-     * 将 DO 对象转换为响应 Map（不含脱敏 API Key，用于仓库层查询失败的回退场景）
+     * 将 DO 对象直接转换为响应 Map（用于列表查询，避免逐条回查仓库层）。
+     * 输出字段与 {@link #toResponse(ApiKeyConfig)} 保持一致。
      *
-     * @param dO API Key 配置 DO 对象
-     * @return 响应 Map，包含基本配置信息
+     * @param dO           API Key 配置 DO 对象
+     * @param modelMapping 该 Key 的模型映射（可为 null）
+     * @return 响应 Map
      */
-    private Map<String, Object> toResponseFromDO(ApiKeyConfigDO dO) {
+    private Map<String, Object> toResponse(ApiKeyConfigDO dO, Map<String, String> modelMapping) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", dO.getId());
         m.put("name", dO.getName());
         m.put("provider", dO.getProvider());
         m.put("protocol", dO.getProtocol());
         m.put("base_url", dO.getBaseUrl());
-        m.put("model_mapping", convertModelMapping(dO.getModelMapping()));
+        m.put("model_mapping", modelMapping);
         m.put("priority", dO.getPriority());
+        m.put("max_concurrent", dO.getMaxConcurrent());
+        m.put("qps_limit", dO.getQpsLimit());
+        m.put("timeout_ms", dO.getTimeoutMs());
+        m.put("retry_count", dO.getRetryCount());
         m.put("status", dO.getStatus());
         m.put("health_status", dO.getHealthStatus());
+        m.put("api_key_masked", maskFromEnc(dO.getApiKeyEnc()));
         m.put("created_at", dO.getCreatedAt());
         return m;
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, String> convertModelMapping(Object raw) {
-        if (raw == null) return null;
-        if (raw instanceof Map) return (Map<String, String>) raw;
-        if (raw instanceof List) {
-            Map<String, String> mapping = new LinkedHashMap<>();
-            for (Object item : (List<?>) raw) {
-                String s = String.valueOf(item);
-                mapping.put(s, s);
-            }
-            return mapping;
+    /**
+     * 从密文解密后脱敏展示；解密失败（历史数据/密钥轮换）时返回占位符而非报错。
+     */
+    private String maskFromEnc(String enc) {
+        try {
+            return cryptoUtils.mask(cryptoUtils.decrypt(enc));
+        } catch (Exception e) {
+            return "****";
         }
-        return null;
     }
 }

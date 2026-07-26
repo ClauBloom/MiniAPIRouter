@@ -20,6 +20,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -43,6 +46,7 @@ public class ScheduledHealthChecker implements HealthChecker {
     private static final Logger log = LoggerFactory.getLogger(ScheduledHealthChecker.class);
     private static final int FAILURE_THRESHOLD = 3;          // 连续失败次数阈值，达到后标记为 down
     private static final int PROBE_TIMEOUT_SECONDS = 10;      // 探测超时时间（秒）
+    private static final int MAX_CONCURRENT_PROBES = 16;
 
     private final ApiKeyConfigMapper mapper;        // API Key 配置 Mapper
     private final ApiKeyConfigRepository keyRepository;  // API Key 配置仓库，用于更新健康状态
@@ -85,12 +89,26 @@ public class ScheduledHealthChecker implements HealthChecker {
         wrapper.eq(ApiKeyConfigDO::getStatus, 1).eq(ApiKeyConfigDO::getDeleted, 0);
         List<ApiKeyConfigDO> keys = mapper.selectList(wrapper);
         log.info("[HealthCheck] Probing {} active key configs", keys.size());
-        // 逐一探测
-        for (ApiKeyConfigDO dO : keys) {
-            try {
-                probe(dO);
-            } catch (Exception e) {
-                log.warn("[HealthCheck] Error probing key {}: {}", dO.getId(), e.getMessage());
+        // HTTP 探测是阻塞 I/O，使用虚拟线程并发执行；关闭执行器时等待本轮全部任务完成。
+        Semaphore probeSlots = new Semaphore(MAX_CONCURRENT_PROBES);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (ApiKeyConfigDO dO : keys) {
+                executor.submit(() -> {
+                    boolean acquired = false;
+                    try {
+                        probeSlots.acquire();
+                        acquired = true;
+                        probe(dO);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        log.warn("[HealthCheck] Error probing key {}: {}", dO.getId(), e.getMessage());
+                    } finally {
+                        if (acquired) {
+                            probeSlots.release();
+                        }
+                    }
+                });
             }
         }
     }

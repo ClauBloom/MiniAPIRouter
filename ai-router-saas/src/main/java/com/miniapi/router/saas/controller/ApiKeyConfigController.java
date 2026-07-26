@@ -5,6 +5,7 @@ import com.miniapi.router.saas.dto.response.ApiResponse;
 import com.miniapi.router.saas.dto.response.PageResult;
 import com.miniapi.router.saas.service.ApiKeyConfigService;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -25,6 +26,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/v1/tenant/api-keys")
+@PreAuthorize("hasRole('TENANT_ADMIN')")
 public class ApiKeyConfigController {
 
     private final ApiKeyConfigService apiService; // API Key 配置服务

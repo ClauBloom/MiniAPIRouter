@@ -1,6 +1,7 @@
 package com.miniapi.router.saas.spiimpl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.miniapi.router.core.domain.RouteRule;
 import com.miniapi.router.core.spi.RouteRuleRepository;
 import com.miniapi.router.core.util.JsonUtils;
@@ -10,6 +11,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -44,6 +47,22 @@ public class MybatisRouteRuleRepository implements RouteRuleRepository {
     public RouteRule findById(Long id) {
         RouteRuleDO dO = mapper.selectById(id);
         return dO != null ? toDomain(dO) : null;
+    }
+
+    /**
+     * 根据ID列表批量查询路由规则（单次 IN 查询，避免逐条查询）
+     *
+     * @param ids 规则ID列表
+     * @return 路由规则列表（保持传入 ID 顺序）
+     */
+    @Override
+    public List<RouteRule> findByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        Map<Long, RouteRule> byId = mapper.selectList(
+                        new LambdaQueryWrapper<RouteRuleDO>().in(RouteRuleDO::getId, ids))
+                .stream().map(this::toDomain)
+                .collect(Collectors.toMap(RouteRule::getId, r -> r));
+        return ids.stream().map(byId::get).filter(Objects::nonNull).collect(Collectors.toList());
     }
 
     /**
@@ -123,18 +142,26 @@ public class MybatisRouteRuleRepository implements RouteRuleRepository {
 
     /**
      * 删除路由规则
+     * <p>
+     * WHERE 条件同时包含 ID 和租户 ID，防止跨租户越权删除。
+     * </p>
      *
      * @param id       规则ID
      * @param tenantId 租户ID
      */
     @Override
     public void delete(Long id, Long tenantId) {
-        mapper.deleteById(id);
+        mapper.delete(new LambdaQueryWrapper<RouteRuleDO>()
+                .eq(RouteRuleDO::getId, id)
+                .eq(RouteRuleDO::getTenantId, tenantId));
         evict(tenantId);
     }
 
     /**
      * 更新路由规则启用状态
+     * <p>
+     * WHERE 条件同时包含 ID 和租户 ID，防止跨租户越权修改。
+     * </p>
      *
      * @param id       规则ID
      * @param tenantId 租户ID
@@ -142,10 +169,10 @@ public class MybatisRouteRuleRepository implements RouteRuleRepository {
      */
     @Override
     public void updateEnabled(Long id, Long tenantId, boolean enabled) {
-        RouteRuleDO dO = new RouteRuleDO();
-        dO.setId(id);
-        dO.setEnabled(enabled ? 1 : 0);
-        mapper.updateById(dO);
+        mapper.update(null, new LambdaUpdateWrapper<RouteRuleDO>()
+                .eq(RouteRuleDO::getId, id)
+                .eq(RouteRuleDO::getTenantId, tenantId)
+                .set(RouteRuleDO::getEnabled, enabled ? 1 : 0));
         evict(tenantId);
     }
 

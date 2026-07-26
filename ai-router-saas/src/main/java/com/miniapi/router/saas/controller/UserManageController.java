@@ -3,6 +3,7 @@ package com.miniapi.router.saas.controller;
 import com.miniapi.router.saas.dto.response.ApiResponse;
 import com.miniapi.router.saas.dto.response.PageResult;
 import com.miniapi.router.saas.service.UserService;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -20,6 +21,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/v1/admin/users")
+@PreAuthorize("hasAnyRole('SUPER_ADMIN', 'TENANT_ADMIN')")
 public class UserManageController {
 
     private final UserService userService; // 用户管理服务

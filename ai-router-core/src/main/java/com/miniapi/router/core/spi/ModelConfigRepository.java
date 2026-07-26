@@ -20,6 +20,16 @@ public interface ModelConfigRepository {
     /** 查找指定 Key 下的所有模型 */
     List<ModelConfig> findByApiKeyId(Long apiKeyId);
 
+    /**
+     * 批量查找多个 Key 下的模型。实现方可覆写为单次 IN 查询。
+     */
+    default List<ModelConfig> findByApiKeyIds(List<Long> apiKeyIds) {
+        if (apiKeyIds == null || apiKeyIds.isEmpty()) return List.of();
+        return apiKeyIds.stream()
+                .flatMap(id -> findByApiKeyId(id).stream())
+                .toList();
+    }
+
     /** 保存模型（新增或更新） */
     void save(ModelConfig model);
 

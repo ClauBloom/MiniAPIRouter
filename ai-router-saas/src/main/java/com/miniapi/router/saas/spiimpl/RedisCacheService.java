@@ -4,10 +4,13 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.miniapi.router.core.spi.CacheService;
 import com.miniapi.router.core.util.JsonUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
-import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -19,6 +22,8 @@ import java.util.function.Function;
  */
 @Component
 public class RedisCacheService implements CacheService {
+
+    private static final int SCAN_BATCH_SIZE = 500;
 
     private final StringRedisTemplate redis;  // Redis 字符串模板
 
@@ -100,16 +105,29 @@ public class RedisCacheService implements CacheService {
     /**
      * 按模式批量清除缓存
      * <p>
-     * 使用 Redis 的 KEYS 命令匹配符合模式的键并批量删除。
+     * 使用增量 SCAN 匹配键，并分批通过 UNLINK 异步释放值内存，避免 KEYS 阻塞 Redis。
      * </p>
      *
      * @param pattern 键匹配模式（如 "apikey:*"）
      */
     @Override
     public void evictPattern(String pattern) {
-        Set<String> keys = redis.keys(pattern);
-        if (keys != null && !keys.isEmpty()) {
-            redis.delete(keys);
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(pattern)
+                .count(SCAN_BATCH_SIZE)
+                .build();
+        try (Cursor<String> cursor = redis.scan(options)) {
+            List<String> batch = new ArrayList<>(SCAN_BATCH_SIZE);
+            while (cursor.hasNext()) {
+                batch.add(cursor.next());
+                if (batch.size() == SCAN_BATCH_SIZE) {
+                    redis.unlink(batch);
+                    batch.clear();
+                }
+            }
+            if (!batch.isEmpty()) {
+                redis.unlink(batch);
+            }
         }
     }
 }

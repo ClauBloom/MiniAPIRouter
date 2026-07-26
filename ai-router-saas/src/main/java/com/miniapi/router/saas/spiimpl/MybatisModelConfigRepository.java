@@ -43,6 +43,14 @@ public class MybatisModelConfigRepository implements ModelConfigRepository {
     }
 
     @Override
+    public List<ModelConfig> findByApiKeyIds(List<Long> apiKeyIds) {
+        if (apiKeyIds == null || apiKeyIds.isEmpty()) return List.of();
+        return mapper.selectList(new LambdaQueryWrapper<ModelConfigDO>()
+                        .in(ModelConfigDO::getApiKeyId, apiKeyIds))
+                .stream().map(this::toDomain).collect(Collectors.toList());
+    }
+
+    @Override
     public void save(ModelConfig model) {
         ModelConfigDO dO = toDO(model);
         if (model.getId() != null) {

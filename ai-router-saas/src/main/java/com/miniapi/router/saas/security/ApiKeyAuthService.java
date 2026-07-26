@@ -1,19 +1,12 @@
 package com.miniapi.router.saas.security;
 
-import com.miniapi.router.saas.context.TenantContext;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.miniapi.router.saas.entity.ApiKeyConfigDO;
 import com.miniapi.router.saas.entity.TenantDO;
-import com.miniapi.router.saas.mapper.ApiKeyConfigMapper;
 import com.miniapi.router.saas.mapper.TenantMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
-import com.miniapi.router.core.util.JsonUtils;
-import com.miniapi.router.core.util.CryptoUtils;
-import com.miniapi.router.core.util.TraceUtils;
 
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -38,12 +31,10 @@ public class ApiKeyAuthService {
 
     private final TenantMapper tenantMapper;        // 租户 Mapper，用于查询租户信息
     private final StringRedisTemplate redis;         // Redis 模板，用于缓存和 Key 验证
-    private final CryptoUtils cryptoUtils;           // 加密工具类
 
-    public ApiKeyAuthService(TenantMapper tenantMapper, StringRedisTemplate redis, CryptoUtils cryptoUtils) {
+    public ApiKeyAuthService(TenantMapper tenantMapper, StringRedisTemplate redis) {
         this.tenantMapper = tenantMapper;
         this.redis = redis;
-        this.cryptoUtils = cryptoUtils;
     }
 
     /**
@@ -60,13 +51,14 @@ public class ApiKeyAuthService {
         if (apiKey == null || !apiKey.startsWith("sk-miniapi-")) {
             return AuthResult.fail("INVALID_API_KEY", "Invalid API key format");
         }
-        // 解析 API Key：去掉前缀后按 "-" 分割为租户编码和随机部分
-        String[] parts = apiKey.substring("sk-miniapi-".length()).split("-", 2);
-        if (parts.length < 2) {
+        // 随机部分由十六进制字符组成，从最后一个分隔符切分以支持含连字符的租户编码。
+        String payload = apiKey.substring("sk-miniapi-".length());
+        int separator = payload.lastIndexOf('-');
+        if (separator <= 0 || separator == payload.length() - 1) {
             return AuthResult.fail("INVALID_API_KEY", "Invalid API key format");
         }
-        String tenantCode = parts[0];
-        String randomPart = parts[1];
+        String tenantCode = payload.substring(0, separator);
+        String randomPart = payload.substring(separator + 1);
 
         // 从 Redis 缓存中查询租户ID
         String cacheKey = "apikey:tenant:" + tenantCode;
@@ -92,9 +84,14 @@ public class ApiKeyAuthService {
             redis.opsForValue().set(cacheKey, String.valueOf(tenantId), 5, TimeUnit.MINUTES);
         }
 
-        // 验证 API Key 的随机部分是否在 Redis 中注册
-        String proxyKey = "proxykey:" + tenantCode + ":" + randomPart;
-        if (Boolean.FALSE.equals(redis.hasKey(proxyKey))) {
+        // 优先验证仅含摘要的 v2 索引，并兼容迁移前的旧索引。
+        boolean recognized = Boolean.TRUE.equals(
+                redis.hasKey(ProxyKeyUtils.redisKey(tenantCode, randomPart)));
+        if (!recognized) {
+            recognized = Boolean.TRUE.equals(
+                    redis.hasKey(ProxyKeyUtils.legacyRedisKey(tenantCode, randomPart)));
+        }
+        if (!recognized) {
             return AuthResult.fail("INVALID_API_KEY", "API key not recognized");
         }
         return AuthResult.success(tenantId, apiKey);

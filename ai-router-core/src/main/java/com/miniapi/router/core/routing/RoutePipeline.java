@@ -34,13 +34,13 @@ public class RoutePipeline {
 
     private final RouteRuleRepository routeRuleRepository;
     private final ApiKeyConfigRepository apiKeyConfigRepository;
-    private final HealthChecker healthChecker;
     private final IntentEvaluator intentEvaluator;                          // 意图评估器，负责调用 AI 模型分析用户意图
     private final com.miniapi.router.core.spi.IntentCatalogProvider intentCatalogProvider; // 意图目录提供者
     private final FailureTracker failureTracker;                            // 失败追踪器
     private final SessionRouteMemory sessionRouteMemory;                    // 会话路由记忆
     private final ModelConfigRepository modelConfigRepository;              // 模型配置仓储
-    private final Map<String, RouteStrategy> strategies;                    // 策略名称 -> 策略实现 映射
+    private final RouteStrategyRegistry strategyRegistry;                   // 策略发现与解析
+    private final UpstreamCooldownTracker cooldownTracker;                  // 上游 Key 冷却追踪器
 
     /**
      * 构造路由管道，注入所有依赖并注册可用策略。
@@ -48,31 +48,22 @@ public class RoutePipeline {
      */
     public RoutePipeline(RouteRuleRepository routeRuleRepository,
                          ApiKeyConfigRepository apiKeyConfigRepository,
-                         HealthChecker healthChecker,
                          IntentEvaluator intentEvaluator,
                          com.miniapi.router.core.spi.IntentCatalogProvider intentCatalogProvider,
                          FailureTracker failureTracker,
                          SessionRouteMemory sessionRouteMemory,
                          ModelConfigRepository modelConfigRepository,
-                         WeightStrategy weightStrategy,
-                         PriorityStrategy priorityStrategy,
-                         RoundRobinStrategy roundRobinStrategy,
-                         LeastConnStrategy leastConnStrategy) {
+                         RouteStrategyRegistry strategyRegistry,
+                         UpstreamCooldownTracker cooldownTracker) {
         this.routeRuleRepository = routeRuleRepository;
         this.apiKeyConfigRepository = apiKeyConfigRepository;
-        this.healthChecker = healthChecker;
         this.intentEvaluator = intentEvaluator;
         this.intentCatalogProvider = intentCatalogProvider;
         this.failureTracker = failureTracker;
         this.sessionRouteMemory = sessionRouteMemory;
         this.modelConfigRepository = modelConfigRepository;
-        /* 注册所有可用策略 */
-        this.strategies = Map.of(
-                "weight", weightStrategy,
-                "priority", priorityStrategy,
-                "round_robin", roundRobinStrategy,
-                "least_conn", leastConnStrategy
-        );
+        this.strategyRegistry = strategyRegistry;
+        this.cooldownTracker = cooldownTracker;
     }
 
     /**
@@ -88,8 +79,9 @@ public class RoutePipeline {
         ModelConfig directModel = modelConfigRepository.findByDisplayName(tenantId, model);
         if (directModel != null) {
             ApiKeyConfig directKey = apiKeyConfigRepository.findById(directModel.getApiKeyId());
-            if (directKey != null && directKey.isEnabled()
-                    && !"down".equalsIgnoreCase(directKey.getHealthStatus())) {
+            if (directKey != null && Objects.equals(directKey.getTenantId(), tenantId) && directKey.isEnabled()
+                    && !"down".equalsIgnoreCase(directKey.getHealthStatus())
+                    && !cooldownTracker.isCoolingDown(directKey.getId())) {
                 // 匹配路由规则以获取 fallback 配置（但不做意图评估）
                 List<RouteRule> rules = routeRuleRepository.findEnabledRules(tenantId);
                 RouteRule matched = matchRule(rules, model, ctx);
@@ -122,7 +114,9 @@ public class RoutePipeline {
             log.info("[Route] Rule '{}' has empty target_key_ids, using all {} keys for tenant", 
                     matched.getRuleName(), allKeys.size());
         } else {
-            allKeys = apiKeyConfigRepository.findByIds(matched.getTargetKeyIds());
+            allKeys = apiKeyConfigRepository.findByIds(matched.getTargetKeyIds()).stream()
+                    .filter(key -> Objects.equals(key.getTenantId(), tenantId))
+                    .collect(Collectors.toList());
         }
         /* 3. 过滤：模型名在数据库中存在时走精确匹配，不存在时全部 Key 为候选（走意图路由） */
         boolean modelKnown = model != null && !model.isEmpty()
@@ -135,6 +129,21 @@ public class RoutePipeline {
 
         if (candidates.isEmpty()) {
             throw new RouterException("NO_AVAILABLE_UPSTREAM", "无可用上游", 503);
+        }
+
+        /* 3b. 冷却过滤：优先避开近期连续失败的 Key；全部冷却时 fail-open 照常路由 */
+        List<ApiKeyConfig> available = candidates.stream()
+                .filter(k -> !cooldownTracker.isCoolingDown(k.getId()))
+                .collect(Collectors.toList());
+        if (available.isEmpty()) {
+            log.warn("[Route] All {} candidate keys cooling down, fail-open with full candidate list",
+                    candidates.size());
+        } else {
+            if (available.size() < candidates.size()) {
+                log.info("[Route] Skipped {} cooling-down key(s), {} candidate(s) remain",
+                        candidates.size() - available.size(), available.size());
+            }
+            candidates = available;
         }
 
         /* 4. 意图路由分支：若规则匹配类型为 intent，则进行 AI 意图评估 */
@@ -191,11 +200,12 @@ public class RoutePipeline {
                                 .filter(c -> c.getId().equals(mc.getApiKeyId()))
                                 .findFirst().orElse(null);
                         // 若不在候选列表（可能被 RouteRule.targetKeyIds 限制），
-                        // 直接查询 Key 并校验启用/健康状态
+                        // 直接查询 Key 并校验启用/健康/冷却状态
                         if (k == null) {
                             ApiKeyConfig direct = apiKeyConfigRepository.findById(mc.getApiKeyId());
                             if (direct != null && direct.isEnabled()
-                                    && !"down".equalsIgnoreCase(direct.getHealthStatus())) {
+                                    && !"down".equalsIgnoreCase(direct.getHealthStatus())
+                                    && !cooldownTracker.isCoolingDown(direct.getId())) {
                                 candidates.add(direct);
                                 k = direct;
                             }
@@ -291,9 +301,7 @@ public class RoutePipeline {
         }
 
         /* 5. 常规策略路由：使用规则配置的策略（默认为 weight） */
-        RouteStrategy strategy = strategies.getOrDefault(
-                matched.getStrategy() != null ? matched.getStrategy() : "weight",
-                strategies.get("weight"));
+        RouteStrategy strategy = strategyRegistry.resolve(matched.getStrategy());
         ApiKeyConfig selected = strategy.select(candidates);
         if (selected == null) {
             throw new RouterException("NO_AVAILABLE_UPSTREAM", "无可用上游", 503);
@@ -380,14 +388,17 @@ public class RoutePipeline {
     private RouteResult buildResult(RouteRule matched, ApiKeyConfig selected, List<ApiKeyConfig> candidates, String intent, String strategyName) {
         List<RouteTarget> fallbackChain = new ArrayList<>();
         if (Boolean.TRUE.equals(matched.getFallbackEnabled())) {
-            for (ApiKeyConfig k : candidates) {
-                if (!k.getId().equals(selected.getId())) {
-                    // 非 intent 路径：使用 Key 的第一个模型作为 fallback 模型
-                    Map<String, String> mm = k.getModelMapping();
-                    String displayName = mm != null && !mm.isEmpty() ? mm.keySet().iterator().next() : null;
-                    String realName = mm != null && !mm.isEmpty() ? mm.values().iterator().next() : null;
-                    fallbackChain.add(new RouteTarget(k, displayName, realName));
-                }
+            List<ApiKeyConfig> orderedFallbacks = candidates.stream()
+                    .filter(k -> !k.getId().equals(selected.getId()))
+                    .sorted(Comparator.comparingInt(
+                            k -> k.getPriority() != null ? k.getPriority() : 0))
+                    .toList();
+            for (ApiKeyConfig k : orderedFallbacks) {
+                // 非 intent 路径：使用 Key 的第一个模型作为 fallback 模型
+                Map<String, String> mm = k.getModelMapping();
+                String displayName = mm != null && !mm.isEmpty() ? mm.keySet().iterator().next() : null;
+                String realName = mm != null && !mm.isEmpty() ? mm.values().iterator().next() : null;
+                fallbackChain.add(new RouteTarget(k, displayName, realName));
             }
             int maxFallback = matched.getMaxFallback() != null ? matched.getMaxFallback() : 2;
             if (fallbackChain.size() > maxFallback) {
@@ -502,7 +513,8 @@ public class RoutePipeline {
             if ("model".equalsIgnoreCase(matchType) || "intent".equalsIgnoreCase(matchType)) {
                 if (matchGlob(rule.getMatchPattern(), model)) return rule;
             } else if ("regex".equalsIgnoreCase(matchType)) {
-                if (model.matches(rule.getMatchPattern())) return rule;
+                /* 编译结果缓存 + 非法正则防护，避免每请求重新编译 Pattern */
+                if (RoutePatterns.matches(rule.getMatchPattern(), model)) return rule;
             }
         }
         /* 第二轮：通配符回退 */

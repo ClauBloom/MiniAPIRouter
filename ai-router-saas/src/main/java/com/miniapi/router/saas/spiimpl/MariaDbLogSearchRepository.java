@@ -6,12 +6,11 @@ import com.miniapi.router.core.domain.RequestLogMeta;
 import com.miniapi.router.core.spi.LogSearchRepository;
 import com.miniapi.router.saas.entity.RequestLogMetaDO;
 import com.miniapi.router.saas.mapper.RequestLogMetaMapper;
-import com.miniapi.router.saas.mapper.ApiKeyConfigMapper;
+import com.miniapi.router.saas.util.IsoDateTimeParser;
 import com.miniapi.router.core.spi.BlobStorage;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -151,37 +150,29 @@ public class MariaDbLogSearchRepository implements LogSearchRepository {
     @Override
     public Map<String, Object> dashboardSummary(Long tenantId, String startTime, String endTime, String interval) {
         // 解析时间范围，默认最近 7 天
-        LocalDateTime start = startTime != null ? LocalDateTime.parse(startTime.replace("Z", "")) : LocalDateTime.now().minusDays(7);
-        LocalDateTime end = endTime != null ? LocalDateTime.parse(endTime.replace("Z", "")) : LocalDateTime.now();
+        LocalDateTime start = startTime != null ? IsoDateTimeParser.parse(startTime) : LocalDateTime.now().minusDays(7);
+        LocalDateTime end = endTime != null ? IsoDateTimeParser.parse(endTime) : LocalDateTime.now();
 
-        // 查询时间范围内的所有日志
-        LambdaQueryWrapper<RequestLogMetaDO> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(RequestLogMetaDO::getTenantId, tenantId)
-                .ge(RequestLogMetaDO::getCreatedAt, start)
-                .le(RequestLogMetaDO::getCreatedAt, end);
-        List<RequestLogMetaDO> all = mapper.selectList(wrapper);
+        // 标量指标在数据库中一次聚合，避免将时间范围内的全部日志加载到 JVM。
+        Map<String, Object> scalars = mapper.dashboardScalarSummary(tenantId, start, end);
+        int totalRequests = number(scalars, "total_requests").intValue();
+        long successCount = number(scalars, "successful_requests").longValue();
+        long fallbackCount = number(scalars, "fallback_requests").longValue();
 
-        // 计算各项统计指标
         Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("total_requests", all.size());
-        summary.put("total_tokens", all.stream().mapToLong(l -> l.getTotalTokens() != null ? l.getTotalTokens() : 0).sum());
-        summary.put("avg_latency_ms", all.isEmpty() ? 0 : (int) all.stream().mapToInt(l -> l.getLatencyMs() != null ? l.getLatencyMs() : 0).average().orElse(0));
-        summary.put("avg_ttft_ms", all.isEmpty() ? 0 : (int) all.stream().filter(l -> l.getTtftMs() != null).mapToInt(RequestLogMetaDO::getTtftMs).average().orElse(0));
-        long successCount = all.stream().filter(l -> "success".equals(l.getStatus())).count();
-        summary.put("success_rate", all.isEmpty() ? 0 : (double) successCount / all.size());
-        long fallbackCount = all.stream().filter(l -> l.getFallbackCount() != null && l.getFallbackCount() > 0).count();
-        summary.put("fallback_rate", all.isEmpty() ? 0 : (double) fallbackCount / all.size());
+        summary.put("total_requests", totalRequests);
+        summary.put("total_tokens", number(scalars, "total_tokens").longValue());
+        summary.put("avg_latency_ms", number(scalars, "avg_latency_ms").intValue());
+        summary.put("avg_ttft_ms", number(scalars, "avg_ttft_ms").intValue());
+        summary.put("success_rate", totalRequests == 0 ? 0.0d : (double) successCount / totalRequests);
+        summary.put("fallback_rate", totalRequests == 0 ? 0.0d : (double) fallbackCount / totalRequests);
 
         // 模型分布统计
-        List<Map<String, Object>> modelDist = mapper.modelDistribution(tenantId,
-                start.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                end.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        List<Map<String, Object>> modelDist = mapper.modelDistribution(tenantId, start, end);
         summary.put("model_distribution", modelDist);
 
         // 提供商分布统计，计算各提供商占比
-        List<Map<String, Object>> providerDist = mapper.providerDistribution(tenantId,
-                start.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                end.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        List<Map<String, Object>> providerDist = mapper.providerDistribution(tenantId, start, end);
         long totalProvider = providerDist.stream().mapToLong(m -> ((Number) m.get("cnt")).longValue()).sum();
         providerDist.forEach(m -> m.put("percentage", totalProvider == 0 ? 0 : ((Number) m.get("cnt")).doubleValue() / totalProvider));
         summary.put("provider_distribution", providerDist);
@@ -189,6 +180,17 @@ public class MariaDbLogSearchRepository implements LogSearchRepository {
         // Token 趋势数据（暂未实现，返回空列表）
         summary.put("tokens_trend", List.of());
         return summary;
+    }
+
+    /**
+     * 读取数据库聚合值。聚合 SQL 使用 COALESCE，防御性回退仅用于驱动返回 null 的情况。
+     */
+    private Number number(Map<String, Object> values, String key) {
+        Object value = values != null ? values.get(key) : null;
+        if (value == null && values != null) {
+            value = values.get(key.toUpperCase(Locale.ROOT));
+        }
+        return value instanceof Number number ? number : 0;
     }
 
     /**
