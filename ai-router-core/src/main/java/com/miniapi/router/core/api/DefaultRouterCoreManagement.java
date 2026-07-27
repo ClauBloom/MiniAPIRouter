@@ -5,6 +5,7 @@ import com.miniapi.router.core.routing.FailureTracker;
 import com.miniapi.router.core.routing.SessionRouteMemory;
 import com.miniapi.router.core.routing.UpstreamCooldownTracker;
 import com.miniapi.router.core.spi.UpstreamClient;
+import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -13,21 +14,13 @@ import java.util.Map;
 
 /** Core 管理能力的进程内默认实现。 */
 @Component
+@AllArgsConstructor
 public class DefaultRouterCoreManagement implements RouterCoreManagement {
 
     private final UpstreamClient upstreamClient;
     private final FailureTracker failureTracker;
     private final SessionRouteMemory sessionRouteMemory;
     private final UpstreamCooldownTracker cooldownTracker;
-
-    public DefaultRouterCoreManagement(UpstreamClient upstreamClient, FailureTracker failureTracker,
-                                       SessionRouteMemory sessionRouteMemory,
-                                       UpstreamCooldownTracker cooldownTracker) {
-        this.upstreamClient = upstreamClient;
-        this.failureTracker = failureTracker;
-        this.sessionRouteMemory = sessionRouteMemory;
-        this.cooldownTracker = cooldownTracker;
-    }
 
     @Override
     public HealthCheckResult checkHealth(ApiKeyConfig config) {

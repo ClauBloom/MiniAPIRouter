@@ -15,6 +15,7 @@ import com.miniapi.router.core.streaming.StreamProxy;
 import com.miniapi.router.core.util.JsonUtils;
 import com.miniapi.router.core.util.SensitiveErrorSanitizer;
 import com.miniapi.router.core.util.TraceUtils;
+import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.io.OutputStream;
@@ -23,18 +24,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Core 进程内默认实现，封装协议转换、路由、上游代理和 fallback 全流程。 */
 @Component
+@AllArgsConstructor
 public class DefaultRouterCore implements RouterCore {
 
     private final RoutePipeline routePipeline;
     private final StreamProxy streamProxy;
     private final ProtocolRegistry protocolRegistry;
-
-    public DefaultRouterCore(RoutePipeline routePipeline, StreamProxy streamProxy,
-                             ProtocolRegistry protocolRegistry) {
-        this.routePipeline = routePipeline;
-        this.streamProxy = streamProxy;
-        this.protocolRegistry = protocolRegistry;
-    }
 
     @Override
     public RouterResult proxy(RouterRequest request) {

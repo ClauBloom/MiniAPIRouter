@@ -4,6 +4,7 @@ import com.miniapi.router.core.exception.RouterException;
 import com.miniapi.router.standalone.service.StandaloneProxyService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.AllArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,13 +20,10 @@ import java.util.Map;
  * </p>
  */
 @RestController
+@AllArgsConstructor
 public class ProxyController {
 
     private final StandaloneProxyService proxyService; // 代理转发服务
-
-    public ProxyController(StandaloneProxyService proxyService) {
-        this.proxyService = proxyService;
-    }
 
     /**
      * OpenAI 协议代理接口。
