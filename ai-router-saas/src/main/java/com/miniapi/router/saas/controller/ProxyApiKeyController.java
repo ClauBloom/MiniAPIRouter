@@ -30,10 +30,11 @@ import java.util.concurrent.TimeUnit;
  */
 @RestController
 @RequestMapping("/api/v1/tenant/proxy-keys")
-@PreAuthorize("hasRole('TENANT_ADMIN')")
+@PreAuthorize("hasAuthority('tenant:proxy_key:manage')")
 public class ProxyApiKeyController {
 
     private static final int SCAN_BATCH_SIZE = 500;
+    private static final long IDEMPOTENCY_TTL_MINUTES = 10;
 
     private final TenantMapper tenantMapper;      // 租户 Mapper，用于查询租户信息
     private final StringRedisTemplate redis;      // Redis 操作模板，用于存储代理 API Key
@@ -63,33 +64,53 @@ public class ProxyApiKeyController {
      * @return 包含新生成 API Key 信息的统一响应
      */
     @PostMapping
-    public ApiResponse<Object> generate() {
-        // 从租户上下文获取当前租户ID
+    public ApiResponse<Object> generate(
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         Long tenantId = TenantContext.getTenantId();
         TenantDO tenant = tenantMapper.selectById(tenantId);
         if (tenant == null) {
             return ApiResponse.error(404, "Tenant not found");
         }
-        // 生成 16 字节随机数并转换为十六进制字符串
+        String tenantCode = tenant.getTenantCode();
+
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            String idemRedisKey = "proxykey:idem:" + tenantCode + ":"
+                    + ProxyKeyUtils.idempotencyHash(idempotencyKey);
+            String existingRandomPart = redis.opsForValue().get(idemRedisKey);
+            if (existingRandomPart != null && existingRandomPart.length() == 32) {
+                return buildResponse(tenantCode, existingRandomPart);
+            }
+            String randomPart = newRandomPart();
+            // 幂等窗口内仅保存可重建的随机部分，TTL 短暂；主存储仍只保存 SHA-256 摘要。
+            redis.opsForValue().set(idemRedisKey, randomPart, IDEMPOTENCY_TTL_MINUTES, TimeUnit.MINUTES);
+            storeKey(tenant, randomPart);
+            return buildResponse(tenantCode, randomPart);
+        }
+        String randomPart = newRandomPart();
+        storeKey(tenant, randomPart);
+        return buildResponse(tenantCode, randomPart);
+    }
+
+    private String newRandomPart() {
         byte[] bytes = new byte[16];
         random.nextBytes(bytes);
-        String randomPart = HexFormat.of().formatHex(bytes);
-        // 拼接完整的 API Key：sk-miniapi-{租户编码}-{随机部分}
-        String apiKey = "sk-miniapi-" + tenant.getTenantCode() + "-" + randomPart;
-        LocalDateTime createdAt = LocalDateTime.now();
+        return HexFormat.of().formatHex(bytes);
+    }
+
+    private void storeKey(TenantDO tenant, String randomPart) {
         Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("tenant_id", tenantId);
+        metadata.put("tenant_id", tenant.getId());
         metadata.put("suffix", randomPart.substring(randomPart.length() - 4));
-        metadata.put("created_at", createdAt.toString());
-        // Redis Key 仅包含随机部分摘要；完整代理 Key 只在本次响应中返回。
+        metadata.put("created_at", LocalDateTime.now().toString());
         redis.opsForValue().set(ProxyKeyUtils.redisKey(tenant.getTenantCode(), randomPart),
                 JsonUtils.toJson(metadata), 365, TimeUnit.DAYS);
+    }
 
-        // 构建返回结果
+    private ApiResponse<Object> buildResponse(String tenantCode, String randomPart) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("api_key", apiKey);
-        result.put("tenant_code", tenant.getTenantCode());
-        result.put("created_at", createdAt);
+        result.put("api_key", "sk-miniapi-" + tenantCode + "-" + randomPart);
+        result.put("tenant_code", tenantCode);
+        result.put("created_at", LocalDateTime.now());
         return ApiResponse.success(result);
     }
 

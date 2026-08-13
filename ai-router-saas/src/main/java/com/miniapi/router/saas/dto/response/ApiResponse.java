@@ -1,5 +1,6 @@
 package com.miniapi.router.saas.dto.response;
 
+import com.miniapi.router.saas.context.TenantContext;
 import lombok.Data;
 import lombok.Builder;
 
@@ -27,7 +28,12 @@ public class ApiResponse<T> {
      * @return 成功响应对象
      */
     public static <T> ApiResponse<T> success(T data) {
-        return ApiResponse.<T>builder().code(0).message("success").data(data).build();
+        return ApiResponse.<T>builder()
+                .code(0)
+                .message("success")
+                .data(data)
+                .traceId(TenantContext.getTraceId())
+                .build();
     }
 
     /**

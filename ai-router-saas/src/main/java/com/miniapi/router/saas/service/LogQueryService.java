@@ -4,7 +4,9 @@ import com.miniapi.router.core.spi.LogSearchRepository;
 import com.miniapi.router.saas.context.TenantContext;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -68,5 +70,44 @@ public class LogQueryService {
     public Map<String, Object> getDetail(Long id) {
         Long tenantId = TenantContext.getTenantId();
         return searchRepository.getDetail(id, tenantId);
+    }
+
+    public Map<String, Object> routeTrace(Long id) {
+        Long tenantId = TenantContext.getTenantId();
+        Map<String, Object> detail = searchRepository.getDetail(id, tenantId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (detail == null) return result;
+        result.put("matched_rule_id", detail.get("route_rule_id"));
+        result.put("intent", detail.get("intent"));
+        result.put("status", detail.get("status"));
+        List<Map<String, String>> trace = new ArrayList<>();
+        trace.add(step("request", text(detail.get("model")), "complete"));
+        if (detail.get("intent") != null) {
+            trace.add(step("intent", text(detail.get("intent")), "complete"));
+        }
+        if (detail.get("route_rule_id") != null) {
+            trace.add(step("rule", "rule #" + detail.get("route_rule_id"), "complete"));
+        }
+        trace.add(step("model", text(detail.get("model")) + " → " + text(detail.get("mapped_provider")), "complete"));
+        Object fallbackCount = detail.get("fallback_count");
+        if (fallbackCount instanceof Number number && number.intValue() > 0) {
+            trace.add(step("fallback", number + " fallback(s)", "complete"));
+        }
+        boolean success = "success".equals(detail.get("status"));
+        trace.add(step("response", text(detail.get("status")), success ? "complete" : "failed"));
+        result.put("trace", trace);
+        return result;
+    }
+
+    private Map<String, String> step(String id, String detail, String status) {
+        Map<String, String> step = new LinkedHashMap<>();
+        step.put("id", id);
+        step.put("detail", detail);
+        step.put("status", status);
+        return step;
+    }
+
+    private String text(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 }

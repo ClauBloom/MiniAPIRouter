@@ -104,6 +104,8 @@ java -jar MiniAPIRouter-v1.0.3-universal.jar
 | `SAAS_REDIS_PASSWORD` | Redis 密码 |
 | `SAAS_CRYPTO_SECRET` | API Key 加密密钥，需 **32 字节以上** |
 | `SAAS_JWT_SECRET` | JWT 签名密钥，需 **32 字节以上** |
+| `SAAS_CORS_ALLOWED_ORIGINS` | 允许调用 SaaS API 的浏览器 Origin，多个值用逗号分隔 |
+| `SAAS_REFRESH_COOKIE_SECURE` | Refresh Cookie 是否仅通过 HTTPS 发送；生产保持 `true`，本地 HTTP 设为 `false` |
 | `SAAS_ADMIN_DEFAULT_PASSWORD` | 超级管理员初始密码（首次启动创建） |
 | `SAAS_DEMO_ADMIN_DEFAULT_PASSWORD` | Demo 租户管理员初始密码（首次启动创建）
 
@@ -286,9 +288,37 @@ mvn clean package -DskipTests
 
 # 仅构建 Standalone（含依赖）
 mvn clean package -pl ai-router-standalone -am -DskipTests
+
+# 运行全部模块单元测试
+mvn clean verify
+
+# 运行 SaaS 单元测试（Core 为反应堆依赖）
+mvn -pl ai-router-saas -am test
 ```
 
-> 本项目不包含测试套件（无 `src/test` 目录），`mvn test` 不会验证任何内容。
+### 集成测试（需本地 MariaDB + Redis）
+
+Flyway 迁移与真实依赖验证使用独立的 `integration` profile，需在仓库根目录的
+`.env` 中配置正确的 `SAAS_DB_*` 凭据：
+
+```bash
+mvn -pl ai-router-saas -am -Pintegration -Dtest=FlywayMigrationIntegrationTest test
+```
+
+默认单元套件排除 `*IntegrationTest`；CI 需同时运行两套。
+
+### SaaS 前端（`front-saas/`）
+
+前端独立构建与部署，通过 `VITE_API_BASE_URL` 连接后端：
+
+```bash
+npm --prefix front-saas install
+npm --prefix front-saas run lint
+npm --prefix front-saas run typecheck
+npm --prefix front-saas run test:unit
+npm --prefix front-saas run build
+npm --prefix front-saas run test:e2e   # Playwright，含桌面/平板/390×844 与 axe 检查
+```
 
 ## IDEA 配置
 
@@ -322,5 +352,7 @@ SaaS 模式需要以下环境变量：
 | `SAAS_REDIS_PASSWORD` | Redis 密码 |
 | `SAAS_CRYPTO_SECRET` | API Key 加密密钥，需 **32 字节以上** |
 | `SAAS_JWT_SECRET` | JWT 签名密钥，需 **32 字节以上** |
+| `SAAS_CORS_ALLOWED_ORIGINS` | 允许调用 SaaS API 的浏览器 Origin，多个值用逗号分隔 |
+| `SAAS_REFRESH_COOKIE_SECURE` | Refresh Cookie 是否仅通过 HTTPS 发送；生产保持 `true`，本地 HTTP 设为 `false` |
 | `SAAS_ADMIN_DEFAULT_PASSWORD` | 超级管理员初始密码（首次启动创建） |
 | `SAAS_DEMO_ADMIN_DEFAULT_PASSWORD` | Demo 租户管理员初始密码（首次启动创建） |

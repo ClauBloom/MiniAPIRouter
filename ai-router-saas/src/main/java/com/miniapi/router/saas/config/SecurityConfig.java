@@ -3,6 +3,12 @@ package com.miniapi.router.saas.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.miniapi.router.saas.security.JwtAuthenticationFilter;
 import com.miniapi.router.saas.security.JwtTokenProvider;
+import com.miniapi.router.saas.security.PermissionCatalog;
+import com.miniapi.router.saas.security.TenantOverrideFilter;
+import com.miniapi.router.saas.service.TenantContextService;
+import com.miniapi.router.saas.service.AuditLogService;
+import com.miniapi.router.saas.mapper.SysUserMapper;
+import com.miniapi.router.saas.mapper.TenantMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,7 +50,11 @@ public class SecurityConfig {
      * @throws Exception 配置异常
      */
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, JwtTokenProvider jwtTokenProvider) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, JwtTokenProvider jwtTokenProvider,
+                                           SysUserMapper userMapper, TenantMapper tenantMapper,
+                                           PermissionCatalog permissionCatalog,
+                                           TenantContextService tenantContextService,
+                                           AuditLogService auditLogService) throws Exception {
         http
             .csrf(csrf -> csrf.disable()) // 禁用 CSRF 保护，前后端分离架构使用 Token 认证
             .cors(Customizer.withDefaults())
@@ -52,7 +62,8 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 // 登录接口和系统接口允许匿名访问
-                .requestMatchers("/api/v1/auth/login", "/api/v1/system/**").permitAll()
+                .requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh",
+                        "/api/v1/auth/logout", "/api/v1/system/**").permitAll()
                 // 代理接口（/v1/**）使用 API Key 认证，不走 Spring Security 认证
                 .requestMatchers("/v1/**").permitAll()
                 // 其他所有请求都需要认证
@@ -71,7 +82,11 @@ public class SecurityConfig {
                 })
             )
             // 在 UsernamePasswordAuthenticationFilter 之前插入 JWT 认证过滤器
-            .addFilterBefore(new JwtAuthenticationFilter(jwtTokenProvider), UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(new JwtAuthenticationFilter(
+                    jwtTokenProvider, userMapper, tenantMapper, permissionCatalog),
+                    UsernamePasswordAuthenticationFilter.class)
+            .addFilterAfter(new TenantOverrideFilter(tenantContextService, auditLogService),
+                    JwtAuthenticationFilter.class);
 
         return http.build();
     }

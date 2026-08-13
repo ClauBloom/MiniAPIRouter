@@ -21,7 +21,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/v1/admin/users")
-@PreAuthorize("hasAnyRole('SUPER_ADMIN', 'TENANT_ADMIN')")
+@PreAuthorize("hasAnyAuthority('platform:user:manage', 'tenant:member:manage')")
 public class UserManageController {
 
     private final UserService userService; // 用户管理服务
@@ -70,6 +70,28 @@ public class UserManageController {
      * @param body 更新请求体
      * @return 包含更新结果的统一响应
      */
+    @GetMapping("/{id}")
+    public ApiResponse<Object> get(@PathVariable Long id) {
+        return ApiResponse.success(userService.get(id));
+    }
+
+    @PatchMapping("/{id}/status")
+    public ApiResponse<Object> status(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Object value = body.get("status");
+        Integer status = value instanceof Number number ? number.intValue() : null;
+        return ApiResponse.success(userService.changeStatus(id, status));
+    }
+
+    @PutMapping("/{id}/roles")
+    public ApiResponse<Object> role(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        return ApiResponse.success(userService.changeRole(id, (String) body.get("role")));
+    }
+
+    @PostMapping("/{id}/reset-password")
+    public ApiResponse<Object> resetPassword(@PathVariable Long id) {
+        return ApiResponse.success(userService.resetPassword(id));
+    }
+
     @PutMapping("/{id}")
     public ApiResponse<Object> update(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         return ApiResponse.success(userService.update(id, body));

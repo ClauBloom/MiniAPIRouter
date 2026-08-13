@@ -26,7 +26,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/v1/tenant/api-keys")
-@PreAuthorize("hasRole('TENANT_ADMIN')")
 public class ApiKeyConfigController {
 
     private final ApiKeyConfigService apiService; // API Key 配置服务
@@ -47,6 +46,7 @@ public class ApiKeyConfigController {
      * @return 包含创建结果的统一响应
      */
     @PostMapping
+    @PreAuthorize("hasAuthority('tenant:upstream:write')")
     public ApiResponse<Object> create(@Valid @RequestBody ApiKeyConfigRequest req) {
         return ApiResponse.success(apiService.create(req));
     }
@@ -63,6 +63,7 @@ public class ApiKeyConfigController {
      * @return 分页查询结果
      */
     @GetMapping
+    @PreAuthorize("hasAuthority('tenant:upstream:read')")
     public ApiResponse<PageResult<Map<String, Object>>> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int page_size,
@@ -79,7 +80,14 @@ public class ApiKeyConfigController {
      * @param req 更新请求体
      * @return 包含更新结果的统一响应
      */
+    @GetMapping("/models")
+    @PreAuthorize("hasAuthority('tenant:upstream:read')")
+    public ApiResponse<Object> models() {
+        return ApiResponse.success(apiService.listModels());
+    }
+
     @PutMapping("/{id}")
+    @PreAuthorize("hasAuthority('tenant:upstream:write')")
     public ApiResponse<Object> update(@PathVariable Long id, @RequestBody ApiKeyConfigRequest req) {
         return ApiResponse.success(apiService.update(id, req));
     }
@@ -91,6 +99,7 @@ public class ApiKeyConfigController {
      * @return 空数据的成功响应
      */
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('tenant:upstream:write')")
     public ApiResponse<Object> delete(@PathVariable Long id) {
         apiService.delete(id);
         return ApiResponse.success();
@@ -104,6 +113,7 @@ public class ApiKeyConfigController {
      * @return 空数据的成功响应
      */
     @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAuthority('tenant:upstream:write')")
     public ApiResponse<Object> updateStatus(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         apiService.updateStatus(id, Boolean.TRUE.equals(body.get("enabled")));
         return ApiResponse.success();
@@ -117,6 +127,7 @@ public class ApiKeyConfigController {
      * @return 包含健康检查结果的统一响应
      */
     @PostMapping("/{id}/health-check")
+    @PreAuthorize("hasAuthority('tenant:upstream:write')")
     public ApiResponse<Object> healthCheck(@PathVariable Long id) {
         return ApiResponse.success(apiService.healthCheck(id));
     }

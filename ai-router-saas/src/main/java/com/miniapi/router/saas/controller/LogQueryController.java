@@ -2,6 +2,7 @@ package com.miniapi.router.saas.controller;
 
 import com.miniapi.router.saas.dto.response.ApiResponse;
 import com.miniapi.router.saas.service.LogQueryService;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -41,6 +42,7 @@ public class LogQueryController {
      * @return 分页查询结果
      */
     @GetMapping
+    @PreAuthorize("hasAuthority('tenant:log:read')")
     public ApiResponse<Object> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int page_size,
@@ -62,7 +64,14 @@ public class LogQueryController {
      * @return 包含日志详情的统一响应
      */
     @GetMapping("/{id}")
+    @PreAuthorize("hasAuthority('tenant:log:read')")
     public ApiResponse<Object> detail(@PathVariable Long id) {
         return ApiResponse.success(logQueryService.getDetail(id));
+    }
+
+    @GetMapping("/{id}/route-trace")
+    @PreAuthorize("hasAuthority('tenant:log:read')")
+    public ApiResponse<Object> routeTrace(@PathVariable Long id) {
+        return ApiResponse.success(logQueryService.routeTrace(id));
     }
 }

@@ -10,7 +10,8 @@ package com.miniapi.router.saas.context;
  * 在请求结束时调用 {@link #clear()} 清理，防止内存泄漏和线程复用导致的数据串扰。
  */
 public final class TenantContext {
-    private static final ThreadLocal<Long> TENANT_ID = new ThreadLocal<>();   // 当前请求所属的租户ID
+    private static final ThreadLocal<Long> TENANT_ID = new ThreadLocal<>();   // 当前有效租户ID
+    private static final ThreadLocal<Long> AUTHENTICATED_TENANT_ID = new ThreadLocal<>(); // JWT 原始租户ID
     private static final ThreadLocal<Long> USER_ID = new ThreadLocal<>();     // 当前请求的用户ID
     private static final ThreadLocal<String> ROLE = new ThreadLocal<>();      // 当前用户的角色标识
     private static final ThreadLocal<String> TRACE_ID = new ThreadLocal<>();  // 链路追踪ID，用于日志关联
@@ -24,6 +25,12 @@ public final class TenantContext {
     public static void setTenantId(Long tenantId) { TENANT_ID.set(tenantId); }
     /** 获取当前线程的租户ID */
     public static Long getTenantId() { return TENANT_ID.get(); }
+    public static void setAuthenticatedTenantId(Long tenantId) { AUTHENTICATED_TENANT_ID.set(tenantId); }
+    public static Long getAuthenticatedTenantId() { return AUTHENTICATED_TENANT_ID.get(); }
+    public static boolean isTenantOverride() {
+        return AUTHENTICATED_TENANT_ID.get() != null
+                && !java.util.Objects.equals(AUTHENTICATED_TENANT_ID.get(), TENANT_ID.get());
+    }
     /** 设置当前线程的用户ID */
     public static void setUserId(Long userId) { USER_ID.set(userId); }
     /** 获取当前线程的用户ID */
@@ -36,6 +43,16 @@ public final class TenantContext {
     public static void setTraceId(String traceId) { TRACE_ID.set(traceId); }
     /** 获取当前线程的链路追踪ID */
     public static String getTraceId() { return TRACE_ID.get(); }
+    /** 仅清除链路追踪ID，供独立的 Trace 过滤器管理其生命周期。 */
+    public static void clearTraceId() { TRACE_ID.remove(); }
+
+    /** 清除认证身份和租户字段，保留由 Trace 过滤器管理的 trace ID。 */
+    public static void clearIdentity() {
+        TENANT_ID.remove();
+        AUTHENTICATED_TENANT_ID.remove();
+        USER_ID.remove();
+        ROLE.remove();
+    }
 
     /**
      * 清除当前线程的所有上下文信息。
@@ -43,6 +60,7 @@ public final class TenantContext {
      */
     public static void clear() {
         TENANT_ID.remove();
+        AUTHENTICATED_TENANT_ID.remove();
         USER_ID.remove();
         ROLE.remove();
         TRACE_ID.remove();

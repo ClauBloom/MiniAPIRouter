@@ -39,7 +39,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .allowedOrigins(allowedOrigins)                   // 仅允许显式配置的来源
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS") // 允许的 HTTP 方法
                 .allowedHeaders("*")                             // 允许所有请求头
-                .allowCredentials(false)                         // Bearer Token 无需 Cookie 凭证
+                .allowCredentials(true)                          // Refresh Token 使用 HttpOnly Cookie
                 .maxAge(3600);                                   // 预检请求缓存时间（秒）
     }
 }

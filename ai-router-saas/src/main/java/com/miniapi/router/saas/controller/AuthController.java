@@ -2,41 +2,69 @@ package com.miniapi.router.saas.controller;
 
 import com.miniapi.router.saas.dto.request.LoginRequest;
 import com.miniapi.router.saas.dto.response.ApiResponse;
+import com.miniapi.router.saas.dto.response.AuthSessionResponse;
+import com.miniapi.router.saas.dto.response.CurrentUserResponse;
+import com.miniapi.router.saas.security.RefreshCookieFactory;
+import com.miniapi.router.saas.security.SaasPrincipal;
 import com.miniapi.router.saas.service.AuthService;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 认证控制器。
- * 
- * <p>提供用户登录认证接口，接收用户名、密码和租户编码，
- * 验证通过后返回 JWT Token，用于后续请求的身份认证。
- */
 @RestController
 @RequestMapping("/api/v1/auth")
 public class AuthController {
 
-    private final AuthService authService; // 认证服务，处理登录验证逻辑
+    private final AuthService authService;
+    private final RefreshCookieFactory cookies;
 
-    /**
-     * 构造函数注入认证服务。
-     *
-     * @param authService 认证服务
-     */
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, RefreshCookieFactory cookies) {
         this.authService = authService;
+        this.cookies = cookies;
     }
 
-    /**
-     * 用户登录接口。
-     * <p>接收登录请求，验证用户名、密码和租户编码，
-     * 验证成功后返回 JWT Token 及用户信息。
-     *
-     * @param req 登录请求体（包含用户名、密码、租户编码，经过参数校验）
-     * @return 包含登录认证结果的统一响应
-     */
     @PostMapping("/login")
-    public ApiResponse<Object> login(@Valid @RequestBody LoginRequest req) {
-        return ApiResponse.success(authService.login(req.getUsername(), req.getPassword(), req.getTenantCode()));
+    public ResponseEntity<ApiResponse<AuthSessionResponse>> login(
+            @Valid @RequestBody LoginRequest requestBody, HttpServletRequest request) {
+        AuthService.SessionResult result = authService.login(
+                requestBody.getUsername(), requestBody.getPassword(), requestBody.getTenantCode(),
+                request.getHeader(HttpHeaders.USER_AGENT), request.getRemoteAddr());
+        return withCookie(ApiResponse.success(result.response()),
+                cookies.issue(result.rawRefreshToken()).toString());
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<ApiResponse<AuthSessionResponse>> refresh(
+            @CookieValue(name = RefreshCookieFactory.COOKIE_NAME) String rawToken,
+            HttpServletRequest request) {
+        AuthService.SessionResult result = authService.refresh(
+                rawToken, request.getHeader(HttpHeaders.USER_AGENT), request.getRemoteAddr());
+        return withCookie(ApiResponse.success(result.response()),
+                cookies.issue(result.rawRefreshToken()).toString());
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<ApiResponse<Object>> logout(
+            @CookieValue(name = RefreshCookieFactory.COOKIE_NAME, required = false) String rawToken) {
+        authService.logout(rawToken);
+        return withCookie(ApiResponse.success(), cookies.clear().toString());
+    }
+
+    @GetMapping("/me")
+    public ApiResponse<CurrentUserResponse> me(@AuthenticationPrincipal SaasPrincipal principal) {
+        return ApiResponse.success(authService.currentUser(principal.userId()));
+    }
+
+    private <T> ResponseEntity<ApiResponse<T>> withCookie(ApiResponse<T> body, String cookie) {
+        return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie).body(body);
     }
 }

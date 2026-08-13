@@ -5,11 +5,15 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.miniapi.router.core.exception.RouterException;
 import com.miniapi.router.saas.context.TenantContext;
 import com.miniapi.router.saas.dto.request.TenantCreateRequest;
+import com.miniapi.router.saas.dto.request.QuotaAdjustmentRequest;
 import com.miniapi.router.saas.dto.response.PageResult;
 import com.miniapi.router.saas.entity.TenantDO;
+import com.miniapi.router.saas.entity.QuotaAdjustmentDO;
 import com.miniapi.router.saas.mapper.TenantMapper;
+import com.miniapi.router.saas.mapper.QuotaAdjustmentMapper;
 import com.miniapi.router.saas.util.IsoDateTimeParser;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,10 +30,15 @@ import java.util.stream.Collectors;
 @Service
 public class TenantService {
 
-    private final TenantMapper tenantMapper;  // 租户 Mapper，用于数据访问
+    private final TenantMapper tenantMapper;
+    private final QuotaAdjustmentMapper quotaAdjustmentMapper;
+    private final AuditLogService auditLogService;
 
-    public TenantService(TenantMapper tenantMapper) {
+    public TenantService(TenantMapper tenantMapper, QuotaAdjustmentMapper quotaAdjustmentMapper,
+                         AuditLogService auditLogService) {
         this.tenantMapper = tenantMapper;
+        this.quotaAdjustmentMapper = quotaAdjustmentMapper;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -115,13 +124,69 @@ public class TenantService {
         // 逐字段条件更新
         if (req.getTenantName() != null) tenant.setTenantName(req.getTenantName());
         if (req.getPlan() != null) tenant.setPlan(req.getPlan());
-        if (req.getQuotaLimit() != null) tenant.setQuotaLimit(req.getQuotaLimit());
         if (req.getMaxRps() != null) tenant.setMaxRps(req.getMaxRps());
         if (req.getExpiresAt() != null) {
             tenant.setExpiresAt(IsoDateTimeParser.parse(req.getExpiresAt()));
         }
         tenantMapper.updateById(tenant);
         return toResponse(tenant);
+    }
+
+    public Map<String, Object> get(Long id) {
+        return toResponse(requireTenant(id));
+    }
+
+    public Map<String, Object> usage(Long id) {
+        TenantDO tenant = requireTenant(id);
+        Map<String, Object> usage = new LinkedHashMap<>();
+        usage.put("tenant_id", tenant.getId());
+        usage.put("quota_limit", tenant.getQuotaLimit());
+        usage.put("quota_used", tenant.getQuotaUsed());
+        long remaining = Math.max(0L, tenant.getQuotaLimit() - tenant.getQuotaUsed());
+        usage.put("quota_remaining", remaining);
+        usage.put("usage_ratio", tenant.getQuotaLimit() > 0
+                ? (double) tenant.getQuotaUsed() / tenant.getQuotaLimit() : 0D);
+        return usage;
+    }
+
+    @Transactional
+    public Map<String, Object> changeStatus(Long id, Integer status) {
+        if (status == null || (status != 0 && status != 1)) {
+            throw new RouterException("INVALID_TENANT_STATUS", "租户状态无效", 400);
+        }
+        TenantDO tenant = requireTenant(id);
+        tenant.setStatus(status);
+        tenantMapper.updateById(tenant);
+        auditLogService.record("TENANT_STATUS_CHANGE", "tenant", id, id, Map.of("status", status));
+        return toResponse(tenant);
+    }
+
+    @Transactional
+    public Map<String, Object> adjustQuota(Long id, QuotaAdjustmentRequest request) {
+        if (request == null || request.quotaLimit() == null || request.quotaLimit() <= 0
+                || request.reason() == null || request.reason().isBlank()) {
+            throw new RouterException("INVALID_QUOTA_ADJUSTMENT", "配额上限和调整原因无效", 400);
+        }
+        TenantDO tenant = requireTenant(id);
+        long before = tenant.getQuotaLimit();
+        tenant.setQuotaLimit(request.quotaLimit());
+        tenantMapper.updateById(tenant);
+        QuotaAdjustmentDO adjustment = new QuotaAdjustmentDO();
+        adjustment.setTenantId(id);
+        adjustment.setActorUserId(TenantContext.getUserId());
+        adjustment.setBeforeLimit(before);
+        adjustment.setAfterLimit(request.quotaLimit());
+        adjustment.setReason(request.reason().trim());
+        quotaAdjustmentMapper.insert(adjustment);
+        auditLogService.record("TENANT_QUOTA_ADJUST", "tenant", id, id, Map.of(
+                "before_limit", before, "after_limit", request.quotaLimit(), "reason", request.reason().trim()));
+        return toResponse(tenant);
+    }
+
+    private TenantDO requireTenant(Long id) {
+        TenantDO tenant = tenantMapper.selectById(id);
+        if (tenant == null) throw new RouterException("RESOURCE_NOT_FOUND", "租户不存在", 404);
+        return tenant;
     }
 
     /**

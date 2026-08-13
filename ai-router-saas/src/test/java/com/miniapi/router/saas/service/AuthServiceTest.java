@@ -9,6 +9,7 @@ import com.miniapi.router.saas.entity.TenantDO;
 import com.miniapi.router.saas.mapper.SysUserMapper;
 import com.miniapi.router.saas.mapper.TenantMapper;
 import com.miniapi.router.saas.security.JwtTokenProvider;
+import com.miniapi.router.saas.security.PermissionCatalog;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +34,7 @@ class AuthServiceTest {
     private TenantMapper tenantMapper;
     private PasswordEncoder passwordEncoder;
     private JwtTokenProvider jwtTokenProvider;
+    private RefreshSessionService refreshSessionService;
     private AuthService service;
 
     @BeforeAll
@@ -48,9 +50,14 @@ class AuthServiceTest {
         tenantMapper = mock(TenantMapper.class);
         passwordEncoder = mock(PasswordEncoder.class);
         jwtTokenProvider = mock(JwtTokenProvider.class);
-        service = new AuthService(userMapper, tenantMapper, jwtTokenProvider, passwordEncoder);
+        refreshSessionService = mock(RefreshSessionService.class);
+        service = new AuthService(userMapper, tenantMapper, jwtTokenProvider, passwordEncoder,
+                refreshSessionService, new PermissionCatalog());
 
         when(passwordEncoder.matches(anyString(), anyString())).thenReturn(true);
+        when(refreshSessionService.create(anyLong(), anyLong(), any(), any()))
+                .thenReturn(new RefreshSessionService.IssuedSession(
+                        1L, "refresh", 1L, 0L, java.time.LocalDateTime.now().plusDays(30)));
         when(jwtTokenProvider.generateToken(anyLong(), anyString(), anyString(), anyLong(), anyString()))
                 .thenReturn("jwt");
     }
@@ -60,7 +67,7 @@ class AuthServiceTest {
         when(tenantMapper.selectOne(any())).thenReturn(null);
         when(userMapper.selectOne(any())).thenReturn(user(1L, 99L, "same-name"));
 
-        assertThatThrownBy(() -> service.login("same-name", "password", "missing"))
+        assertThatThrownBy(() -> service.login("same-name", "password", "missing", null, null))
                 .isInstanceOfSatisfying(RouterException.class, error -> {
                     assertThat(error.getErrorCode()).isEqualTo("UNAUTHORIZED");
                     assertThat(error.getHttpStatus()).isEqualTo(401);
@@ -74,7 +81,7 @@ class AuthServiceTest {
         when(tenantMapper.selectById(42L)).thenReturn(tenant);
         when(userMapper.selectOne(any())).thenReturn(user(2L, 42L, "demo_admin"));
 
-        service.login("demo_admin", "password", "demo");
+        service.login("demo_admin", "password", "demo", null, null);
 
         Collection<Object> values = capturedUserQueryValues();
         assertThat(values).contains("demo_admin", 42L);
@@ -84,7 +91,7 @@ class AuthServiceTest {
     void scopesLoginWithoutTenantCodeToPlatformTenant() {
         when(userMapper.selectOne(any())).thenReturn(user(1L, 0L, "admin"));
 
-        service.login("admin", "password", null);
+        service.login("admin", "password", null, null, null);
 
         Collection<Object> values = capturedUserQueryValues();
         assertThat(values).contains("admin", 0L);

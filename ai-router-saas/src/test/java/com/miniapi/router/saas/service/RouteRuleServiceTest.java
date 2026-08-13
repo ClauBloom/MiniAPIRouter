@@ -70,6 +70,22 @@ class RouteRuleServiceTest {
     }
 
     @Test
+    void createRejectsDisabledTargetKey() {
+        ApiKeyConfig disabled = new ApiKeyConfig();
+        disabled.setId(99L);
+        disabled.setTenantId(10L);
+        disabled.setStatus(0);
+        when(keyRepository.findByIds(List.of(99L))).thenReturn(List.of(disabled));
+        RouteRuleRequest request = new RouteRuleRequest();
+        request.setTargetKeyIds(List.of(99L));
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOfSatisfying(RouterException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo("INVALID_TARGET_KEYS"));
+        verify(ruleRepository, never()).save(any(RouteRule.class));
+    }
+
+    @Test
     void createRejectsTargetKeyOwnedByAnotherTenant() {
         ApiKeyConfig foreignKey = new ApiKeyConfig();
         foreignKey.setId(99L);

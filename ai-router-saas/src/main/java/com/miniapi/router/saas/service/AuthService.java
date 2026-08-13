@@ -1,119 +1,145 @@
 package com.miniapi.router.saas.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.miniapi.router.core.exception.RouterException;
+import com.miniapi.router.saas.dto.response.AuthSessionResponse;
+import com.miniapi.router.saas.dto.response.CurrentUserResponse;
 import com.miniapi.router.saas.entity.SysUserDO;
 import com.miniapi.router.saas.entity.TenantDO;
 import com.miniapi.router.saas.mapper.SysUserMapper;
 import com.miniapi.router.saas.mapper.TenantMapper;
 import com.miniapi.router.saas.security.JwtTokenProvider;
-import com.miniapi.router.core.exception.RouterException;
-import com.miniapi.router.core.util.TraceUtils;
+import com.miniapi.router.saas.security.PermissionCatalog;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
-/**
- * 认证服务
- * <p>
- * 提供用户登录认证功能，验证用户名密码后生成 JWT Token。
- * 同时检查用户状态和租户状态，确保被禁用的用户或租户无法登录。
- * </p>
- */
+/** Authentication and revocable management-session lifecycle. */
 @Service
 public class AuthService {
 
-    private final SysUserMapper userMapper;              // 用户 Mapper，用于查询用户信息
-    private final TenantMapper tenantMapper;             // 租户 Mapper，用于查询租户信息
-    private final JwtTokenProvider jwtTokenProvider;     // JWT Token 提供者，用于生成 Token
-    private final PasswordEncoder passwordEncoder;       // 密码编码器，用于验证密码
+    private final SysUserMapper userMapper;
+    private final TenantMapper tenantMapper;
+    private final JwtTokenProvider jwtTokenProvider;
+    private final PasswordEncoder passwordEncoder;
+    private final RefreshSessionService refreshSessions;
+    private final PermissionCatalog permissions;
 
     public AuthService(SysUserMapper userMapper, TenantMapper tenantMapper,
-                       JwtTokenProvider jwtTokenProvider, PasswordEncoder passwordEncoder) {
+                       JwtTokenProvider jwtTokenProvider, PasswordEncoder passwordEncoder,
+                       RefreshSessionService refreshSessions, PermissionCatalog permissions) {
         this.userMapper = userMapper;
         this.tenantMapper = tenantMapper;
         this.jwtTokenProvider = jwtTokenProvider;
         this.passwordEncoder = passwordEncoder;
+        this.refreshSessions = refreshSessions;
+        this.permissions = permissions;
     }
 
-    /**
-     * 用户登录
-     * <p>
-     * 验证用户名和密码，检查用户和租户状态，成功后生成 JWT Token 并返回用户信息。
-     * </p>
-     *
-     * @param username   用户名
-     * @param password   密码
-     * @param tenantCode 租户编码
-     * @return 登录结果，包含 Token、过期时间和用户信息
-     * @throws RouterException 当用户名或密码错误（401）、用户被禁用（403）或租户被禁用（403）时抛出
-     */
-    public Map<String, Object> login(String username, String password, String tenantCode) {
-        // 租户用户必须先通过租户编码解析租户；未提供编码时只查询平台租户（ID=0）。
-        TenantDO requestedTenant = null;
-        Long requestedTenantId = 0L;
-        if (tenantCode != null && !tenantCode.isBlank()) {
-            requestedTenant = tenantMapper.selectOne(new LambdaQueryWrapper<TenantDO>()
-                    .eq(TenantDO::getTenantCode, tenantCode.trim()));
-            if (requestedTenant == null) {
-                throw new RouterException("UNAUTHORIZED", "用户名或密码错误", 401);
-            }
-            requestedTenantId = requestedTenant.getId();
-        }
-
-        // 用户名允许在不同租户重复，因此必须同时限定 tenant_id。
-        LambdaQueryWrapper<SysUserDO> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(SysUserDO::getUsername, username)
-                .eq(SysUserDO::getTenantId, requestedTenantId);
-        SysUserDO user = userMapper.selectOne(wrapper);
-
-        // 验证用户存在性和密码正确性
+    @Transactional
+    public SessionResult login(String username, String password, String tenantCode,
+                               String userAgent, String ipAddress) {
+        TenantDO requestedTenant = resolveRequestedTenant(tenantCode);
+        Long requestedTenantId = requestedTenant == null ? 0L : requestedTenant.getId();
+        SysUserDO user = userMapper.selectOne(new LambdaQueryWrapper<SysUserDO>()
+                .eq(SysUserDO::getUsername, username)
+                .eq(SysUserDO::getTenantId, requestedTenantId));
         if (user == null || !passwordEncoder.matches(password, user.getPassword())) {
-            throw new RouterException("UNAUTHORIZED", "用户名或密码错误", 401);
+            throw unauthorized();
         }
-        // 检查用户是否被禁用
-        if (user.getStatus() != null && user.getStatus() == 0) {
-            throw new RouterException("FORBIDDEN", "用户已被禁用", 403);
-        }
+        requireActiveUser(user);
+        TenantDO tenant = requireActiveTenant(user.getTenantId(), requestedTenant);
 
-        // 查询租户信息，获取租户名称并检查租户状态
-        Long tenantId = user.getTenantId();
-        String tenantName = "";
-        if (tenantId != null && tenantId > 0) {
-            TenantDO tenant = requestedTenant != null ? requestedTenant : tenantMapper.selectById(tenantId);
-            if (tenant != null) {
-                tenantName = tenant.getTenantName();
-                // 检查租户是否被禁用
-                if (tenant.getStatus() != null && tenant.getStatus() == 0) {
-                    throw new RouterException("TENANT_DISABLED", "租户已被禁用", 403);
-                }
-            }
-        }
-
-        // 更新最后登录时间
         user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginIp(safeIp(ipAddress));
         userMapper.updateById(user);
 
-        // 生成 JWT Token
+        RefreshSessionService.IssuedSession refresh = refreshSessions.create(
+                user.getId(), user.getTenantId(), userAgent, ipAddress);
+        return session(user, tenant, refresh.rawToken());
+    }
+
+    @Transactional
+    public SessionResult refresh(String rawToken, String userAgent, String ipAddress) {
+        RefreshSessionService.IssuedSession refresh = refreshSessions.rotate(rawToken, userAgent, ipAddress);
+        SysUserDO user = userMapper.selectById(refresh.userId());
+        requireActiveUser(user);
+        TenantDO tenant = requireActiveTenant(user.getTenantId(), null);
+        return session(user, tenant, refresh.rawToken());
+    }
+
+    public void logout(String rawToken) {
+        refreshSessions.revoke(rawToken);
+    }
+
+    public CurrentUserResponse currentUser(Long userId) {
+        SysUserDO user = userMapper.selectById(userId);
+        requireActiveUser(user);
+        TenantDO tenant = requireActiveTenant(user.getTenantId(), null);
+        return toCurrentUser(user, tenant);
+    }
+
+    private SessionResult session(SysUserDO user, TenantDO tenant, String rawRefreshToken) {
+        String tenantName = tenant == null ? "" : tenant.getTenantName();
         String token = jwtTokenProvider.generateToken(user.getId(), user.getUsername(),
-                user.getRole(), tenantId, tenantName);
+                user.getRole(), user.getTenantId(), tenantName);
+        CurrentUserResponse currentUser = toCurrentUser(user, tenant);
+        return new SessionResult(new AuthSessionResponse(
+                token, jwtTokenProvider.getExpirationMs() / 1000, currentUser), rawRefreshToken);
+    }
 
-        // 构建返回结果
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("token", token);
-        result.put("expires_in", jwtTokenProvider.getExpirationMs() / 1000);
+    private CurrentUserResponse toCurrentUser(SysUserDO user, TenantDO tenant) {
+        return new CurrentUserResponse(user.getId(), user.getUsername(), user.getNickname(),
+                user.getRole(), user.getTenantId(), tenant == null ? "" : tenant.getTenantName(),
+                permissions.permissionsFor(user.getRole()));
+    }
 
-        Map<String, Object> userInfo = new LinkedHashMap<>();
-        userInfo.put("id", user.getId());
-        userInfo.put("username", user.getUsername());
-        userInfo.put("nickname", user.getNickname());
-        userInfo.put("role", user.getRole());
-        userInfo.put("tenant_id", tenantId);
-        userInfo.put("tenant_name", tenantName);
-        result.put("user", userInfo);
+    private TenantDO resolveRequestedTenant(String tenantCode) {
+        if (tenantCode == null || tenantCode.isBlank()) {
+            return null;
+        }
+        TenantDO tenant = tenantMapper.selectOne(new LambdaQueryWrapper<TenantDO>()
+                .eq(TenantDO::getTenantCode, tenantCode.trim()));
+        if (tenant == null) {
+            throw unauthorized();
+        }
+        return tenant;
+    }
 
-        return result;
+    private void requireActiveUser(SysUserDO user) {
+        if (user == null) {
+            throw unauthorized();
+        }
+        if (Integer.valueOf(0).equals(user.getStatus())) {
+            throw new RouterException("USER_DISABLED", "User is disabled", 401);
+        }
+    }
+
+    private TenantDO requireActiveTenant(Long tenantId, TenantDO knownTenant) {
+        if (tenantId == null || tenantId == 0L) {
+            return null;
+        }
+        TenantDO tenant = knownTenant != null ? knownTenant : tenantMapper.selectById(tenantId);
+        if (tenant == null || Integer.valueOf(0).equals(tenant.getStatus())) {
+            throw new RouterException("TENANT_DISABLED", "Tenant is disabled", 403);
+        }
+        if (tenant.getExpiresAt() != null && tenant.getExpiresAt().isBefore(LocalDateTime.now())) {
+            throw new RouterException("TENANT_EXPIRED", "Tenant is expired", 403);
+        }
+        return tenant;
+    }
+
+    private RouterException unauthorized() {
+        return new RouterException("UNAUTHORIZED", "Invalid username or password", 401);
+    }
+
+    private String safeIp(String ipAddress) {
+        if (ipAddress == null) return null;
+        return ipAddress.substring(0, Math.min(64, ipAddress.length()));
+    }
+
+    public record SessionResult(AuthSessionResponse response, String rawRefreshToken) {
     }
 }

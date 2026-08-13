@@ -4,9 +4,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.miniapi.router.core.domain.ApiKeyConfig;
 import com.miniapi.router.core.domain.ModelConfig;
+import com.miniapi.router.core.domain.RouteRule;
+import com.miniapi.router.core.api.RouterCoreManagement;
 import com.miniapi.router.core.exception.RouterException;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
 import com.miniapi.router.core.spi.ModelConfigRepository;
+import com.miniapi.router.core.spi.RouteRuleRepository;
 import com.miniapi.router.core.util.CryptoUtils;
 import com.miniapi.router.saas.context.TenantContext;
 import com.miniapi.router.saas.dto.request.ApiKeyConfigRequest;
@@ -18,8 +21,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -39,13 +46,19 @@ public class ApiKeyConfigService {
     private final ApiKeyConfigMapper mapper;              // MyBatis-Plus Mapper，用于分页查询
     private final CryptoUtils cryptoUtils;                // 加密工具类，用于脱敏显示
     private final ModelConfigRepository modelConfigRepository;
+    private final RouteRuleRepository routeRuleRepository;
+    private final RouterCoreManagement coreManagement;
+    private final Set<Long> healthChecksInFlight = ConcurrentHashMap.newKeySet();
 
     public ApiKeyConfigService(ApiKeyConfigRepository keyRepository, ApiKeyConfigMapper mapper, CryptoUtils cryptoUtils,
-                               ModelConfigRepository modelConfigRepository) {
+                               ModelConfigRepository modelConfigRepository, RouteRuleRepository routeRuleRepository,
+                               RouterCoreManagement coreManagement) {
         this.keyRepository = keyRepository;
         this.mapper = mapper;
         this.cryptoUtils = cryptoUtils;
         this.modelConfigRepository = modelConfigRepository;
+        this.routeRuleRepository = routeRuleRepository;
+        this.coreManagement = coreManagement;
     }
 
     /**
@@ -162,6 +175,13 @@ public class ApiKeyConfigService {
     public void delete(Long id) {
         Long tenantId = TenantContext.getTenantId();
         requireOwned(id, tenantId);
+        List<String> references = routeRuleRepository.findByTenantId(tenantId).stream()
+                .filter(rule -> rule.getTargetKeyIds() != null && rule.getTargetKeyIds().contains(id))
+                .map(RouteRule::getRuleName).filter(Objects::nonNull).limit(3).toList();
+        if (!references.isEmpty()) {
+            throw new RouterException("RESOURCE_IN_USE",
+                    "上游仍被路由规则引用: " + String.join(", ", references), 409);
+        }
         modelConfigRepository.deleteByApiKeyId(id);
         keyRepository.delete(id, tenantId);
     }
@@ -189,13 +209,43 @@ public class ApiKeyConfigService {
      * @return 健康检查结果
      * @throws RouterException 当配置不存在或不属于当前租户时抛出 404
      */
+    public List<Map<String, Object>> listModels() {
+        Long tenantId = TenantContext.getTenantId();
+        List<ModelConfig> models = modelConfigRepository.findByTenantId(tenantId);
+        Set<Long> keyIds = models.stream().map(ModelConfig::getApiKeyId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> keyNames = keyRepository.findByIds(new ArrayList<>(keyIds)).stream()
+                .filter(key -> Objects.equals(key.getTenantId(), tenantId))
+                .collect(Collectors.toMap(ApiKeyConfig::getId, ApiKeyConfig::getName));
+        return models.stream().map(model -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", model.getId());
+            item.put("tenant_id", model.getTenantId());
+            item.put("display_name", model.getDisplayName());
+            item.put("real_name", model.getRealName());
+            item.put("api_key_id", model.getApiKeyId());
+            item.put("upstream_name", keyNames.getOrDefault(model.getApiKeyId(), ""));
+            return item;
+        }).toList();
+    }
+
     public Map<String, Object> healthCheck(Long id) {
         ApiKeyConfig config = requireOwned(id, TenantContext.getTenantId());
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("id", id);
-        result.put("health_status", config.getHealthStatus() != null ? config.getHealthStatus() : "unknown");
-        result.put("last_check_at", java.time.LocalDateTime.now());
-        return result;
+        if (!healthChecksInFlight.add(id)) {
+            throw new RouterException("HEALTH_CHECK_IN_PROGRESS", "健康检查正在进行", 409);
+        }
+        try {
+            RouterCoreManagement.HealthCheckResult probe = coreManagement.checkHealth(config);
+            String status = "healthy".equals(probe.status()) ? "healthy" : "down";
+            keyRepository.updateHealthStatus(id, status);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("id", id);
+            result.put("status", probe.status());
+            result.put("detail", probe.detail());
+            result.put("checked_at", java.time.LocalDateTime.now());
+            return result;
+        } finally {
+            healthChecksInFlight.remove(id);
+        }
     }
 
     /**

@@ -41,3 +41,10 @@ designs/
 # AI agent instructions
 AGENTS.md
 .opencode/
+.superpowers/
+
+# SaaS frontend output
+front-saas/node_modules/
+front-saas/dist/
+front-saas/playwright-report/
+front-saas/test-results/

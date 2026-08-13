@@ -29,6 +29,11 @@ spring:
       password: ${SAAS_REDIS_PASSWORD}
       database: 0
       timeout: 5000
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+    locations: classpath:db/migration
   jackson:
     default-property-inclusion: non_null
     property-naming-strategy: SNAKE_CASE
@@ -52,7 +57,9 @@ miniapi:
     crypto-secret: ${SAAS_CRYPTO_SECRET}
     blob-storage-path: ${user.home}/.miniapirouter/logs
     jwt-secret: ${SAAS_JWT_SECRET}
-    jwt-expiration: 86400000
+    jwt-expiration: 900000
+    refresh-expiration: 2592000000
+    refresh-cookie-secure: ${SAAS_REFRESH_COOKIE_SECURE:true}
     cors-allowed-origins: ${SAAS_CORS_ALLOWED_ORIGINS:}
 
 logging:

@@ -25,6 +25,10 @@ public final class ProxyKeyUtils {
         return "sk-miniapi-" + tenantCode + "-..." + suffix;
     }
 
+    public static String idempotencyHash(String idempotencyKey) {
+        return sha256(idempotencyKey);
+    }
+
     private static String sha256(String value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

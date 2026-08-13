@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.miniapi.router.core.spi.ApiKeyConfigRepository;
 import com.miniapi.router.core.spi.ModelConfigRepository;
+import com.miniapi.router.core.spi.RouteRuleRepository;
+import com.miniapi.router.core.api.RouterCoreManagement;
 import com.miniapi.router.core.util.CryptoUtils;
 import com.miniapi.router.saas.context.TenantContext;
 import com.miniapi.router.saas.entity.ApiKeyConfigDO;
@@ -47,7 +49,8 @@ class ApiKeyConfigServiceListTest {
         when(cryptoUtils.decrypt("encrypted")).thenReturn("plain-key");
         when(cryptoUtils.mask("plain-key")).thenReturn("mask");
         ApiKeyConfigService service = new ApiKeyConfigService(
-                mock(ApiKeyConfigRepository.class), mapper, cryptoUtils, models);
+                mock(ApiKeyConfigRepository.class), mapper, cryptoUtils, models,
+                mock(RouteRuleRepository.class), mock(RouterCoreManagement.class));
 
         service.list(1, 20, null, null, null);
 

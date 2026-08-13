@@ -179,7 +179,8 @@ public class RouteRuleService {
         Set<Long> requestedIds = new LinkedHashSet<>(targetKeyIds);
         List<ApiKeyConfig> keys = keyRepository.findByIds(new ArrayList<>(requestedIds));
         boolean valid = keys.size() == requestedIds.size()
-                && keys.stream().allMatch(key -> Objects.equals(key.getTenantId(), tenantId));
+                && keys.stream().allMatch(key -> Objects.equals(key.getTenantId(), tenantId)
+                        && Objects.equals(key.getStatus(), 1));
         if (!valid) {
             throw new RouterException("INVALID_TARGET_KEYS", "目标 API Key 不存在或不属于当前租户", 400);
         }

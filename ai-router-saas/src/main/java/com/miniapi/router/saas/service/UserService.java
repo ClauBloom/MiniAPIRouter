@@ -9,8 +9,11 @@ import com.miniapi.router.saas.entity.SysUserDO;
 import com.miniapi.router.saas.mapper.SysUserMapper;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.LinkedHashMap;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -30,11 +33,16 @@ public class UserService {
     private static final Set<String> ALLOWED_ROLES = Set.of("user", "tenant_admin", "super_admin");
 
     private final SysUserMapper userMapper;            // 用户 Mapper，用于数据访问
-    private final PasswordEncoder passwordEncoder;     // 密码编码器，用于密码加密
+    private final PasswordEncoder passwordEncoder;
+    private final RefreshSessionService refreshSessionService;
+    private final AuditLogService auditLogService;
 
-    public UserService(SysUserMapper userMapper, PasswordEncoder passwordEncoder) {
+    public UserService(SysUserMapper userMapper, PasswordEncoder passwordEncoder,
+                       RefreshSessionService refreshSessionService, AuditLogService auditLogService) {
         this.userMapper = userMapper;
         this.passwordEncoder = passwordEncoder;
+        this.refreshSessionService = refreshSessionService;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -77,7 +85,7 @@ public class UserService {
      */
     public Map<String, Object> create(Map<String, Object> body) {
         assertCanManageUsers();
-        Long tenantId = TenantContext.getTenantId();
+        Long tenantId = creationTenantId(body);
         String username = requireText(body, "username");
         String password = requireText(body, "password");
         String role = body.get("role") != null ? (String) body.get("role") : "user";
@@ -125,12 +133,59 @@ public class UserService {
         return toResponse(user);
     }
 
+    public Map<String, Object> get(Long id) {
+        return toResponse(requireManageable(id));
+    }
+
+    @Transactional
+    public Map<String, Object> changeStatus(Long id, Integer status) {
+        if (status == null || (status != 0 && status != 1)) {
+            throw new RouterException("INVALID_USER_STATUS", "用户状态无效", 400);
+        }
+        if (Objects.equals(id, TenantContext.getUserId()) && status == 0) {
+            throw new RouterException("SELF_ACCOUNT_CHANGE_FORBIDDEN", "不能禁用当前账户", 409);
+        }
+        SysUserDO user = requireManageable(id);
+        user.setStatus(status);
+        userMapper.updateById(user);
+        if (status == 0) refreshSessionService.revokeAllForUser(id);
+        auditLogService.record("USER_STATUS_CHANGE", "user", id, user.getTenantId(), Map.of("status", status));
+        return toResponse(user);
+    }
+
+    @Transactional
+    public Map<String, Object> changeRole(Long id, String role) {
+        SysUserDO user = requireManageable(id);
+        validateAssignableRole(role, user.getTenantId());
+        user.setRole(role);
+        userMapper.updateById(user);
+        refreshSessionService.revokeAllForUser(id);
+        auditLogService.record("USER_ROLE_CHANGE", "user", id, user.getTenantId(), Map.of("role", role));
+        return toResponse(user);
+    }
+
+    @Transactional
+    public Map<String, Object> resetPassword(Long id) {
+        SysUserDO user = requireManageable(id);
+        byte[] random = new byte[18];
+        new SecureRandom().nextBytes(random);
+        String temporaryPassword = Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+        user.setPassword(passwordEncoder.encode(temporaryPassword));
+        userMapper.updateById(user);
+        refreshSessionService.revokeAllForUser(id);
+        auditLogService.record("USER_PASSWORD_RESET", "user", id, user.getTenantId(), Map.of());
+        return Map.of("temporary_password", temporaryPassword);
+    }
+
     /**
      * 删除用户
      *
      * @param id 用户ID
      */
     public void delete(Long id) {
+        if (Objects.equals(id, TenantContext.getUserId())) {
+            throw new RouterException("SELF_ACCOUNT_CHANGE_FORBIDDEN", "不能删除当前账户", 409);
+        }
         requireManageable(id);
         userMapper.deleteById(id);
     }
@@ -183,6 +238,18 @@ public class UserService {
     /**
      * 获取必填文本字段并拒绝空值。
      */
+    private Long creationTenantId(Map<String, Object> body) {
+        Object requested = body.get("tenant_id");
+        if (requested == null) return TenantContext.getTenantId();
+        if (!"super_admin".equals(TenantContext.getRole())) {
+            throw new RouterException("FORBIDDEN", "无权指定目标租户", 403);
+        }
+        if (!(requested instanceof Number number) || number.longValue() <= 0) {
+            throw new RouterException("INVALID_REQUEST", "tenant_id 无效", 400);
+        }
+        return number.longValue();
+    }
+
     private String requireText(Map<String, Object> body, String field) {
         Object value = body.get(field);
         if (!(value instanceof String text) || text.isBlank()) {

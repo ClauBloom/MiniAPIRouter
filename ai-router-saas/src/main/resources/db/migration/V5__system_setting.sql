@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS system_setting (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    setting_key VARCHAR(128) NOT NULL,
+    setting_value VARCHAR(512) NOT NULL,
+    updated_by BIGINT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_system_setting_key (setting_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

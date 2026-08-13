@@ -17,7 +17,7 @@
         <dependency>
             <groupId>com.miniapi</groupId>
             <artifactId>ai-router-core</artifactId>
-            <version>1.0.5-SNAPSHOT</version>
+            <version>${ai-router-core.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

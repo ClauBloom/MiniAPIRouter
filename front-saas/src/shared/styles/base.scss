@@ -1,0 +1,7 @@
+@use './tokens.scss';
+* { box-sizing: border-box; }
+html, body, #app { min-height: 100%; margin: 0; }
+body { background: var(--canvas); color: var(--ink); font: 14px/1.55 Inter, 'Noto Sans SC', system-ui, sans-serif; }
+button, a { min-height: 44px; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }

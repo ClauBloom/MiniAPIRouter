@@ -76,4 +76,41 @@ public interface RequestLogMetaMapper extends BaseMapper<RequestLogMetaDO> {
             @Param("tenantId") Long tenantId,
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime);
+
+    @Select("""
+            SELECT DATE(created_at) AS day, COUNT(*) AS cnt, COALESCE(SUM(total_tokens),0) AS tokens
+            FROM request_log_meta
+            WHERE tenant_id = #{tenantId}
+              AND (#{startTime} IS NULL OR created_at >= #{startTime})
+              AND (#{endTime} IS NULL OR created_at <= #{endTime})
+            GROUP BY DATE(created_at) ORDER BY day ASC
+            """)
+    List<Map<String, Object>> usageTrend(
+            @Param("tenantId") Long tenantId,
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime);
+
+    @Select("""
+            SELECT user_id, COUNT(*) AS cnt, COALESCE(SUM(total_tokens),0) AS tokens
+            FROM request_log_meta
+            WHERE tenant_id = #{tenantId}
+              AND (#{startTime} IS NULL OR created_at >= #{startTime})
+              AND (#{endTime} IS NULL OR created_at <= #{endTime})
+            GROUP BY user_id ORDER BY cnt DESC
+            """)
+    List<Map<String, Object>> usageByUser(
+            @Param("tenantId") Long tenantId,
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime);
+
+    @Select("""
+            SELECT COUNT(*) AS total_requests,
+                   COALESCE(SUM(COALESCE(total_tokens,0)),0) AS total_tokens
+            FROM request_log_meta
+            WHERE (#{startTime} IS NULL OR created_at >= #{startTime})
+              AND (#{endTime} IS NULL OR created_at <= #{endTime})
+            """)
+    Map<String, Object> adminUsageSummary(
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime);
 }

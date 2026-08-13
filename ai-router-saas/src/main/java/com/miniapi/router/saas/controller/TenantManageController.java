@@ -3,6 +3,8 @@ package com.miniapi.router.saas.controller;
 import com.miniapi.router.saas.dto.response.ApiResponse;
 import com.miniapi.router.saas.dto.response.PageResult;
 import com.miniapi.router.saas.dto.request.TenantCreateRequest;
+import com.miniapi.router.saas.dto.request.QuotaAdjustmentRequest;
+import com.miniapi.router.saas.dto.request.TenantStatusRequest;
 import com.miniapi.router.saas.service.TenantService;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -22,7 +24,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/v1/admin/tenants")
-@PreAuthorize("hasRole('SUPER_ADMIN')")
 public class TenantManageController {
 
     private final TenantService tenantService; // 租户管理服务
@@ -43,6 +44,7 @@ public class TenantManageController {
      * @return 包含创建结果的统一响应
      */
     @PostMapping
+    @PreAuthorize("hasAuthority('platform:tenant:write')")
     public ApiResponse<Object> create(@RequestBody TenantCreateRequest req) {
         return ApiResponse.success(tenantService.create(req));
     }
@@ -59,6 +61,7 @@ public class TenantManageController {
      * @return 分页查询结果
      */
     @GetMapping
+    @PreAuthorize("hasAuthority('platform:tenant:read')")
     public ApiResponse<PageResult<Map<String, Object>>> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int page_size,
@@ -75,7 +78,32 @@ public class TenantManageController {
      * @param req 更新请求体
      * @return 包含更新结果的统一响应
      */
+    @GetMapping("/{id}")
+    @PreAuthorize("hasAuthority('platform:tenant:read')")
+    public ApiResponse<Object> get(@PathVariable Long id) {
+        return ApiResponse.success(tenantService.get(id));
+    }
+
+    @GetMapping("/{id}/usage")
+    @PreAuthorize("hasAuthority('platform:tenant:read')")
+    public ApiResponse<Object> usage(@PathVariable Long id) {
+        return ApiResponse.success(tenantService.usage(id));
+    }
+
+    @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAuthority('platform:tenant:write')")
+    public ApiResponse<Object> status(@PathVariable Long id, @RequestBody TenantStatusRequest request) {
+        return ApiResponse.success(tenantService.changeStatus(id, request.status()));
+    }
+
+    @PostMapping("/{id}/quota-adjustments")
+    @PreAuthorize("hasAuthority('platform:tenant:write')")
+    public ApiResponse<Object> adjustQuota(@PathVariable Long id, @RequestBody QuotaAdjustmentRequest request) {
+        return ApiResponse.success(tenantService.adjustQuota(id, request));
+    }
+
     @PutMapping("/{id}")
+    @PreAuthorize("hasAuthority('platform:tenant:write')")
     public ApiResponse<Object> update(@PathVariable Long id, @RequestBody TenantCreateRequest req) {
         return ApiResponse.success(tenantService.update(id, req));
     }
@@ -87,6 +115,7 @@ public class TenantManageController {
      * @return 空数据的成功响应
      */
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('platform:tenant:write')")
     public ApiResponse<Object> delete(@PathVariable Long id) {
         tenantService.delete(id);
         return ApiResponse.success();
