@@ -143,4 +143,76 @@ public class AnthropicRequestConverterTest {
         assertThat(tools.get(0)).doesNotContainKey("type");
         assertThat(tools.get(0)).doesNotContainKey("function");
     }
+
+    @Test
+    @DisplayName("buildUpstreamRequest: 并行工具调用的连续 tool 结果应合并进同一条 user 消息")
+    void should_mergeConsecutiveToolResults_intoSingleUserMessage() {
+        // Arrange: user -> assistant(两个并行 tool_calls) -> 两条连续的 tool 结果
+        Map<String, Object> userMsg = new LinkedHashMap<>();
+        userMsg.put("role", "user");
+        userMsg.put("content", "列出当前目录并查看README");
+
+        Map<String, Object> fnA = new LinkedHashMap<>();
+        fnA.put("name", "bash");
+        fnA.put("arguments", "{\"command\": \"ls\"}");
+        Map<String, Object> callA = new LinkedHashMap<>();
+        callA.put("id", "call_01_AAAAAAAAAAAAAAAAAAAAAA");
+        callA.put("type", "function");
+        callA.put("function", fnA);
+
+        Map<String, Object> fnB = new LinkedHashMap<>();
+        fnB.put("name", "bash");
+        fnB.put("arguments", "{\"command\": \"cat README.md\"}");
+        Map<String, Object> callB = new LinkedHashMap<>();
+        callB.put("id", "call_01_mmpD6xRX5ixMh4WfReFB0838");
+        callB.put("type", "function");
+        callB.put("function", fnB);
+
+        Map<String, Object> assistantMsg = new LinkedHashMap<>();
+        assistantMsg.put("role", "assistant");
+        assistantMsg.put("content", "");
+        assistantMsg.put("tool_calls", List.of(callA, callB));
+
+        Map<String, Object> resultA = new LinkedHashMap<>();
+        resultA.put("role", "tool");
+        resultA.put("tool_call_id", "call_01_AAAAAAAAAAAAAAAAAAAAAA");
+        resultA.put("content", "pom.xml README.md");
+
+        Map<String, Object> resultB = new LinkedHashMap<>();
+        resultB.put("role", "tool");
+        resultB.put("tool_call_id", "call_01_mmpD6xRX5ixMh4WfReFB0838");
+        resultB.put("content", "# BloomHarness");
+
+        UnifiedRequest req = new UnifiedRequest();
+        req.setModel("deepseek-v4-flash-vision-exp");
+        req.setMessages(List.of(userMsg, assistantMsg, resultA, resultB));
+        req.setStream(true);
+
+        // Act
+        Map<String, Object> body = converter.buildUpstreamRequest(req, "anthropic");
+
+        // Assert: user / assistant(tool_use x2) / user(tool_result x2)
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> messages = (List<Map<String, Object>>) body.get("messages");
+        assertThat(messages).hasSize(3);
+
+        Map<String, Object> normalizedAssistant = messages.get(1);
+        assertThat(normalizedAssistant.get("role")).isEqualTo("assistant");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> assistantBlocks = (List<Map<String, Object>>) normalizedAssistant.get("content");
+        assertThat(assistantBlocks).hasSize(2);
+        assertThat(assistantBlocks).extracting(b -> b.get("type")).containsExactly("tool_use", "tool_use");
+
+        // 两条 tool 结果必须合并为紧随 assistant 的同一条 user 消息，
+        // 否则 Anthropic 上游报 400: tool_use ids were found without tool_result blocks immediately after
+        Map<String, Object> mergedResults = messages.get(2);
+        assertThat(mergedResults.get("role")).isEqualTo("user");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> resultBlocks = (List<Map<String, Object>>) mergedResults.get("content");
+        assertThat(resultBlocks).hasSize(2);
+        assertThat(resultBlocks.get(0).get("type")).isEqualTo("tool_result");
+        assertThat(resultBlocks.get(0).get("tool_use_id")).isEqualTo("call_01_AAAAAAAAAAAAAAAAAAAAAA");
+        assertThat(resultBlocks.get(1).get("type")).isEqualTo("tool_result");
+        assertThat(resultBlocks.get(1).get("tool_use_id")).isEqualTo("call_01_mmpD6xRX5ixMh4WfReFB0838");
+    }
 }

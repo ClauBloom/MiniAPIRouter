@@ -148,16 +148,29 @@ public class AnthropicRequestConverter implements RequestConverter {
                 continue;
             }
 
-            // 3. 工具结果消息 -> user 消息中的 tool_result 内容块
+            // 3. 工具结果消息 -> user 消息中的 tool_result 内容块。
+            //    Anthropic 要求 assistant 消息里的每个 tool_use 都必须在紧随其后的
+            //    同一条 user 消息中给出对应 tool_result；并行工具调用会产生多条连续
+            //    role=tool 消息，必须合并进同一条 user 消息，否则上游返回 400
+            //    (tool_use ids were found without tool_result blocks immediately after)。
             if ("tool".equalsIgnoreCase(role) || msg.get("tool_call_id") != null) {
-                Map<String, Object> toolResultMsg = new LinkedHashMap<>();
-                toolResultMsg.put("role", "user");
                 Map<String, Object> block = new LinkedHashMap<>();
                 block.put("type", "tool_result");
                 block.put("tool_use_id", msg.get("tool_call_id"));
                 block.put("content", msg.get("content"));
-                toolResultMsg.put("content", List.of(block));
-                out.add(toolResultMsg);
+                Map<String, Object> lastMsg = out.isEmpty() ? null : out.get(out.size() - 1);
+                if (isToolResultCarrier(lastMsg)) {
+                    @SuppressWarnings("unchecked")
+                    List<Object> blocks = (List<Object>) lastMsg.get("content");
+                    blocks.add(block);
+                } else {
+                    Map<String, Object> toolResultMsg = new LinkedHashMap<>();
+                    toolResultMsg.put("role", "user");
+                    List<Object> blocks = new java.util.ArrayList<>();
+                    blocks.add(block);
+                    toolResultMsg.put("content", blocks);
+                    out.add(toolResultMsg);
+                }
                 continue;
             }
 
@@ -192,6 +205,19 @@ public class AnthropicRequestConverter implements RequestConverter {
             // 4. 其余消息原样保留
             out.add(msg);
         }
+    }
+
+    /**
+     * 判断上一条已归一化消息是否为 tool_result 载体（role=user 且 content 全部为 tool_result 块），
+     * 用于将连续的工具结果消息合并进同一条 user 消息。
+     */
+    private boolean isToolResultCarrier(Map<String, Object> msg) {
+        if (msg == null || !"user".equals(msg.get("role"))) return false;
+        if (!(msg.get("content") instanceof List<?> blocks) || blocks.isEmpty()) return false;
+        for (Object b : blocks) {
+            if (!(b instanceof Map<?, ?> m) || !"tool_result".equals(m.get("type"))) return false;
+        }
+        return true;
     }
 
     /**
