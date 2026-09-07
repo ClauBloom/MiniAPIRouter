@@ -121,12 +121,24 @@ public class DeltaJsonParser {
         String type = node.path("type").asText("");
         switch (type) {
             case "message_start": {
-                /* 消息开始：提取消息 ID、模型，设置 assistant 角色 */
+                /* 消息开始：提取消息 ID、模型，设置 assistant 角色，并保留输入 token 用量 */
                 JsonNode message = node.path("message");
                 String id = message.path("id").asText(defaultId);
                 String model = message.path("model").asText(defaultModel);
+                Map<String, Integer> upstreamUsage = null;
+                JsonNode usageNode = message.path("usage");
+                if (!usageNode.isMissingNode() && usageNode.size() > 0) {
+                    upstreamUsage = new HashMap<>();
+                    if (usageNode.has("input_tokens")) {
+                        upstreamUsage.put("prompt_tokens", usageNode.get("input_tokens").asInt(0));
+                    }
+                    if (usageNode.has("output_tokens")) {
+                        upstreamUsage.put("completion_tokens", usageNode.get("output_tokens").asInt(0));
+                    }
+                }
                 return UnifiedStreamChunk.builder()
                         .id(id).model(model).deltaRole("assistant").index(0)
+                        .upstreamUsage(upstreamUsage)
                         .timestamp(System.currentTimeMillis()).build();
             }
             case "content_block_start": {
