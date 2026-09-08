@@ -25,6 +25,12 @@ public class UnifiedResponse {
     private String reasoningContent;
     /** 内容块列表（用于多模态或 Anthropic 格式的内容块） */
     private List<Map<String, Object>> contentBlocks;
+    /**
+     * 工具调用列表，统一为 OpenAI 风格：
+     * {@code [{id, type:"function", function:{name, arguments(JSON字符串)}}]}。
+     * Anthropic 上游的 tool_use 块会被归一化为该格式。
+     */
+    private List<Map<String, Object>> toolCalls;
     /** 停止原因（如 stop、length、tool_calls） */
     private String finishReason;
     /** 输入 token 数量 */

@@ -105,7 +105,7 @@ public class OpenAIStreamConverter implements StreamConverter {
 
     @Override
     public boolean supports(String protocol) {
-        return "openai".equalsIgnoreCase(protocol);
+        return "openai".equalsIgnoreCase(protocol) || "spring-ai".equalsIgnoreCase(protocol);
     }
 
     /**

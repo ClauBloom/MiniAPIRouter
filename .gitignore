@@ -48,3 +48,5 @@ front-saas/node_modules/
 front-saas/dist/
 front-saas/playwright-report/
 front-saas/test-results/
+
+.m2repo/

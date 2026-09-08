@@ -19,7 +19,6 @@ import org.springframework.stereotype.Component;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -28,7 +27,7 @@ import java.util.function.Consumer;
  * 支持两种模式：
  * <ul>
  *   <li><b>非流式代理</b>：同步调用上游，解析响应并返回统一格式</li>
- *   <li><b>流式代理</b>：通过 SSE 长连接透传上游流式输出，支持回退切换</li>
+ *   <li><b>流式代理</b>：通过 {@link StreamSink} 逐块输出上游流式内容，支持回退切换</li>
  * </ul>
  * 同时负责协议转换、Token 估算、用量上报和回退信号发射。
  * <p>
@@ -36,7 +35,7 @@ import java.util.function.Consumer;
  * 仅对<b>可回退错误</b>（限流/5xx/网络超时，见 {@link UpstreamException#isFailoverEligible(int)}）
  * 尝试下一个 Key，并向 {@link UpstreamCooldownTracker} 上报失败反馈；
  * 对请求级确定性错误（400 参数错误等）立即失败并透传真实错误，不浪费回退次数。
- * 客户端断开时立即停止消费上游流，避免浪费上游 Token。
+ * 下游断开（sink 返回 false）时立即停止消费上游流，避免浪费上游 Token。
  * </p>
  */
 @Component
@@ -146,10 +145,7 @@ public class StreamProxy {
     ) {}
 
     /**
-     * 流式代理：建立上游 SSE 连接，实时解析并转换流式数据块，
-     * 通过 OutputStream 输出到下游客户端。
-     * 支持上游失败时的静默回退（未发送任何内容时）和显式回退信号。
-     * 检测到客户端断开后立即终止上游消费。
+     * SSE 便捷重载：保持 HTTP 宿主现有行为，把 chunk 转成 SSE 文本写到 {@link OutputStream}。
      */
     public StreamContext proxyStream(StreamProxyContext ctx, OutputStream os) {
         return proxyStream(ctx, os, ignored -> {});
@@ -157,11 +153,27 @@ public class StreamProxy {
 
     public StreamContext proxyStream(StreamProxyContext ctx, OutputStream os,
                                      Consumer<String> terminalErrorConsumer) {
+        StreamConverter converter = protocolRegistry.getStreamConverter(ctx.inboundProtocol());
+        return proxyStreamSink(ctx, new SseStreamSink(os, converter, ctx.inboundProtocol()), terminalErrorConsumer);
+    }
+
+    /**
+     * 流式代理：建立上游 SSE 连接，实时解析并转换为统一流块，通过 {@link StreamSink} 输出。
+     * <p>
+     * 支持上游失败时的静默回退（尚未发送任何内容时）和显式回退信号；
+     * sink 返回 false 视为下游断开，立即终止上游消费。
+     * </p>
+     */
+    public StreamContext proxyStreamSink(StreamProxyContext ctx, StreamSink sink) {
+        return proxyStreamSink(ctx, sink, ignored -> {});
+    }
+
+    public StreamContext proxyStreamSink(StreamProxyContext ctx, StreamSink sink,
+                                         Consumer<String> terminalErrorConsumer) {
+        Objects.requireNonNull(sink, "sink");
         Objects.requireNonNull(terminalErrorConsumer, "terminalErrorConsumer");
         /* 构建调用链 */
         List<RouteTarget> chain = buildChain(ctx.routeResult());
-
-        StreamConverter streamConverter = protocolRegistry.getStreamConverter(ctx.inboundProtocol());
 
         /* 状态变量 */
         StringBuilder accumulated = new StringBuilder();           // 累积的文本内容
@@ -215,11 +227,11 @@ public class StreamProxy {
                         if (chunk.getUpstreamUsage() != null) {
                             upstreamUsageFromChunks = chunk.getUpstreamUsage();
                         }
-                        /* 覆盖 id/model 为请求级标识，再转换为下游协议格式输出 */
+                        /* 覆盖 id/model 为请求级标识，交给 sink 输出 */
                         chunk.setId(ctx.requestId());
                         chunk.setModel(ctx.defaultModel());
-                        if (!writeChunk(os, streamConverter.toSseChunk(chunk, ctx.inboundProtocol()))) {
-                            /* 客户端已断开：立即停止消费上游，避免继续浪费上游 Token */
+                        if (!sink.onChunk(chunk)) {
+                            /* 下游已断开：立即停止消费上游，避免继续浪费上游 Token */
                             clientDisconnected = true;
                             log.info("[StreamProxy] Client disconnected, aborting upstream consumption "
                                     + "(provider={}, {} chars sent)", key.getProvider(), accumulated.length());
@@ -241,8 +253,7 @@ public class StreamProxy {
                     /* 请求级确定性错误：换 Key 无意义，透传真实错误并终止 */
                     log.warn("[StreamProxy] Non-retryable upstream error from {}, fail fast: {}",
                             key.getProvider(), e.getMessage());
-                    writeChunk(os, streamConverter.toErrorSseChunk("UPSTREAM_ERROR",
-                            SensitiveErrorSanitizer.sanitize(e.getMessage()), ctx.traceId()));
+                    sink.onError("UPSTREAM_ERROR", SensitiveErrorSanitizer.sanitize(e.getMessage()), ctx.traceId());
                     break;
                 }
                 log.warn("[StreamProxy] Retryable upstream error from {}: {}",
@@ -265,8 +276,12 @@ public class StreamProxy {
                             .partialContentLength(accumulated.length())
                             .timestamp(System.currentTimeMillis())
                             .build();
-                    String fbChunk = streamConverter.toFallbackSseChunk(event);
-                    if (fbChunk == null || fbChunk.isEmpty()) {
+                    StreamSink.FallbackOutcome outcome = sink.onFallback(event);
+                    if (outcome == StreamSink.FallbackOutcome.DISCONNECTED) {
+                        clientDisconnected = true;
+                        break;
+                    }
+                    if (outcome == StreamSink.FallbackOutcome.NO_SIGNAL) {
                         /* 静默回退：尚未发送内容，可安全切换到下一个 Key */
                         if (firstChunk) {
                             log.info("[StreamProxy] Silent fallback from {} to {} (no content sent yet)",
@@ -279,24 +294,20 @@ public class StreamProxy {
                             /* 已发送内容，无法静默回退，发送中断错误 */
                             log.warn("[StreamProxy] Cannot fallback in {} protocol (content already sent), stopping",
                                     ctx.inboundProtocol());
-                            writeChunk(os, streamConverter.toErrorSseChunk("UPSTREAM_INTERRUPTED",
+                            sink.onError("UPSTREAM_INTERRUPTED",
                                     SensitiveErrorSanitizer.sanitize("上游流式输出中断: " + e.getMessage()),
-                                    ctx.traceId()));
+                                    ctx.traceId());
                             break;
                         }
                     } else {
-                        /* 显式回退：下发回退事件信号；客户端已断开则直接终止 */
-                        if (!writeChunk(os, fbChunk)) {
-                            clientDisconnected = true;
-                            break;
-                        }
+                        /* 显式回退：sink 已下发回退事件信号 */
                         firstChunk = false;
                     }
                 } else {
                     /* 所有上游均失败，发送全部失败错误 */
-                    writeChunk(os, streamConverter.toErrorSseChunk("ALL_UPSTREAM_FAILED",
+                    sink.onError("ALL_UPSTREAM_FAILED",
                             SensitiveErrorSanitizer.sanitize("所有上游服务均不可用: " + e.getMessage()),
-                            ctx.traceId()));
+                            ctx.traceId());
                 }
             } finally {
                 closeQuietly(reader);
@@ -336,8 +347,8 @@ public class StreamProxy {
 
         /* 输出用量统计和流结束标记（客户端已断开时跳过无效写出） */
         if (!clientDisconnected) {
-            writeChunk(os, streamConverter.toUsageSseChunk(stats));
-            writeChunk(os, streamConverter.toDoneMark(ctx.inboundProtocol()));
+            sink.onUsage(stats);
+            sink.onComplete();
         }
 
         if (lastErrorMessage != null) {
@@ -371,25 +382,6 @@ public class StreamProxy {
             chain.addAll(routeResult.getFallbackChain());
         }
         return chain;
-    }
-
-    /**
-     * 将 SSE 字符串写入 OutputStream 并立即刷新。
-     *
-     * @return true 表示写入成功；false 表示客户端已断开（IO 失败）
-     */
-    private static boolean writeChunk(OutputStream os, String chunk) {
-        if (chunk == null || chunk.isEmpty()) {
-            return true;    // 无内容可写视为成功
-        }
-        try {
-            os.write(chunk.getBytes(StandardCharsets.UTF_8));
-            os.flush();
-            return true;
-        } catch (IOException e) {
-            log.debug("[StreamProxy] Client write failed (disconnected): {}", e.getMessage());
-            return false;
-        }
     }
 
     /** 截取错误响应体片段，避免异常消息过长 */

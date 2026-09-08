@@ -243,6 +243,42 @@ java -jar MiniAPIRouter-v1.0.3-universal.jar
 
 所有接口请求 Header 需携带 `Authorization: Bearer <auth-token>` 或 `x-api-key`。
 
+## Spring AI 生态集成
+
+`ai-router-core` 已原生兼容 [Spring AI](https://docs.spring.io/spring-ai/reference/)（基于 Spring AI 1.1.8 BOM），
+Java 应用可以把路由器**进程内嵌入**，而不必走 HTTP 网关：
+
+```java
+@Autowired ChatModelRouter router;
+
+// 传入 Spring AI 的 Prompt → 预测路由 → 返回绑定了路由决策的 ChatModel
+RoutedChatModel model = router.route(new Prompt("帮我 review 这段代码"));
+model.getPlan().routeResult().getIntent();        // "coding_review"（意图预测结果）
+model.getPlan().routeResult().getSelectedModel(); // 决策的对外模型名
+
+// 也可以直接调用（决策 + 执行一步完成）
+ChatResponse response = router.call(new Prompt("..."));
+Flux<ChatResponse> stream = router.stream(new Prompt("..."));
+```
+
+设计要点（详见 `designs/spring-ai-compat.md`）：
+
+| 理念 | 说明 |
+|------|------|
+| **Spring AI 是第三种协议** | `Prompt`/`ChatResponse` 通过 `protocol/converter/springai/` 转换器与内部统一格式互转，复用同一路由管道、审计日志与意图评估 |
+| **决策与执行分离** | `RouterCore.plan()` 只路由不调用，返回不可变 `RoutePlan`；`execute()/executeStream()` 使用快照执行，可重复执行、可观测、可成本预估 |
+| **预测返回 ChatModel** | `RoutedChatModel` 固定到一份 `RoutePlan`，tool-calling 多轮循环始终落在同一上游模型，不会每轮重新路由 |
+| **路由上下文走 ChatOptions** | `RouterChatOptions` 携带 `tenantId`/`agentIdentity`/`intentHint`/`extraBody`，`ChatClient.prompt().options(...)` 即可驱动路由 |
+| **流式统一为类型化 Chunk 流** | `StreamSink` 抽象让同一套流式代理同时服务 SSE（HTTP 宿主）与 `Flux<ChatResponse>`（Spring AI），下游断开即停止上游消费 |
+
+路由元信息（意图、策略、供应商、fallbackCount、traceId）以 `miniapi.*` 前缀写入
+`ChatResponseMetadata`，Spring AI 应用可直接读取路由决策的可观测数据。
+
+### 版本要求
+
+- Spring Boot **3.5.x**（Spring AI 1.1.x 官方支持范围），Spring AI **1.1.8**
+- MyBatis-Plus 3.5.17（含 `mybatis-plus-jsqlparser` 分页构件）
+
 ---
 
 # 开发
@@ -253,10 +289,12 @@ java -jar MiniAPIRouter-v1.0.3-universal.jar
 ai-router-parent/
 ├── ai-router-core/           # 核心库（非应用）
 │   └── src/main/java/com/miniapi/router/core/
+│       ├── api/              # RouterCore 门面 + Plan/Execute 两阶段 API
 │       ├── spi/              # 12 个 SPI 接口（缓存、存储、限流、日志等）
 │       ├── routing/          # 路由流水线 + 5 种策略
-│       ├── protocol/         # OpenAI / Anthropic 协议转换器
-│       ├── streaming/        # SSE 流式代理
+│       ├── protocol/         # OpenAI / Anthropic / Spring AI 协议转换器
+│       ├── streaming/        # StreamSink 流式代理（SSE + 类型化 chunk）
+│       ├── springai/         # Spring AI ChatModel 绑定（RoutedChatModel 等）
 │       ├── intent/           # 意图评估与路由
 │       └── domain/           # 领域模型
 ├── ai-router-standalone/     # 单体宿主（推荐）

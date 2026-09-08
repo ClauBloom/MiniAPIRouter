@@ -39,6 +39,9 @@ class MybatisApiKeyConfigRepositoryTest {
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "test");
         assistant.setCurrentNamespace("test");
         TableInfoHelper.initTableInfo(assistant, ApiKeyConfigDO.class);
+        /* findByIds 会通过 ModelConfigMapper 的 lambda 条件查询模型映射，
+         * MyBatis-Plus 3.5.17 要求 lambda cache 提前初始化 */
+        TableInfoHelper.initTableInfo(assistant, com.miniapi.router.saas.entity.ModelConfigDO.class);
     }
 
     @Test

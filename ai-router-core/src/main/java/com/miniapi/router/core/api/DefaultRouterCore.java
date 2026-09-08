@@ -12,6 +12,7 @@ import com.miniapi.router.core.protocol.converter.RequestConverter;
 import com.miniapi.router.core.protocol.converter.ResponseConverter;
 import com.miniapi.router.core.routing.RoutePipeline;
 import com.miniapi.router.core.streaming.StreamProxy;
+import com.miniapi.router.core.streaming.StreamSink;
 import com.miniapi.router.core.util.JsonUtils;
 import com.miniapi.router.core.util.SensitiveErrorSanitizer;
 import com.miniapi.router.core.util.TraceUtils;
@@ -22,7 +23,7 @@ import java.io.OutputStream;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Core 进程内默认实现，封装协议转换、路由、上游代理和 fallback 全流程。 */
+/** Core 进程内默认实现：Plan/Execute 两阶段为核心，一步式 API 基于其组合实现。 */
 @Component
 @AllArgsConstructor
 public class DefaultRouterCore implements RouterCore {
@@ -31,44 +32,30 @@ public class DefaultRouterCore implements RouterCore {
     private final StreamProxy streamProxy;
     private final ProtocolRegistry protocolRegistry;
 
+    /* ---------- 一步式 API ---------- */
+
     @Override
     public RouterResult proxy(RouterRequest request) {
-        PreparedRequest prepared = prepare(request, false);
-        ResponseConverter converter = protocolRegistry.getResponseConverter(prepared.protocol());
+        RoutePlan plan = plan(request);
+        ResponseConverter converter = protocolRegistry.getResponseConverter(plan.inboundProtocol());
         try {
-            StreamProxy.ProxyResult result = streamProxy.proxyNonStream(
-                    prepared.routeResult(), prepared.protocol(), prepared.upstreamPath(),
-                    prepared.upstreamBody(), prepared.model(), prepared.requestId());
-            UnifiedResponse response = result.response();
-            UsageStats usage = usage(response, prepared.model(), result.mappedProvider(), result.fallbackCount());
-            return result(prepared, converter.convert(response, prepared.protocol()),
-                    result.mappedProvider(), result.apiKeyId(), usage, result.fallbackCount(),
-                    result.fallbackCount() > 0 ? "fallback" : "success", response.getContent(), null, null);
+            return execute(plan);
         } catch (RouterException exception) {
-            return failure(prepared, converter, exception.getErrorCode(), exception.getMessage());
+            return failure(plan, converter, exception.getErrorCode(), exception.getMessage());
         } catch (Exception exception) {
-            return failure(prepared, converter, "INTERNAL_ERROR", exception.getMessage());
+            return failure(plan, converter, "INTERNAL_ERROR", exception.getMessage());
         }
     }
 
     @Override
     public RouterResult proxyStream(RouterRequest request, OutputStream output) {
-        PreparedRequest prepared = prepare(request, true);
-        AtomicReference<String> terminalError = new AtomicReference<>();
-        StreamProxy.StreamContext stream = streamProxy.proxyStream(new StreamProxy.StreamProxyContext(
-                prepared.routeResult(), prepared.protocol(), prepared.upstreamPath(), prepared.upstreamBody(),
-                prepared.model(), prepared.requestId(), prepared.traceId(), null), output, terminalError::set);
-        String status = stream.apiKeyId() == null ? "failed"
-                : stream.clientDisconnected() ? "client_closed"
-                : stream.fallbackCount() > 0 ? "fallback" : "success";
-        return result(prepared, null, stream.mappedProvider(), stream.apiKeyId(), stream.stats(),
-                stream.fallbackCount(), status, stream.content(),
-                stream.apiKeyId() == null ? "ALL_UPSTREAM_FAILED" : null,
-                stream.apiKeyId() == null
-                        ? valueOr(terminalError.get(), () -> "所有上游服务均不可用") : null);
+        return executeStream(plan(request), output);
     }
 
-    private PreparedRequest prepare(RouterRequest request, boolean forceStream) {
+    /* ---------- 两阶段 API ---------- */
+
+    @Override
+    public RoutePlan plan(RouterRequest request) {
         Map<String, Object> body = request.body();
         String model = body != null ? (String) body.get("model") : null;
         if (model == null) {
@@ -80,14 +67,15 @@ public class DefaultRouterCore implements RouterCore {
         RequestConverter converter = protocolRegistry.getRequestConverter(protocol);
         UnifiedRequest unified = converter.convert(body, request.clientApiKey());
         unified.setInboundProtocol(protocol);
-        boolean stream = forceStream || Boolean.TRUE.equals(body.get("stream"));
+        boolean stream = Boolean.TRUE.equals(body.get("stream"));
 
         RouteContext context = RouteContext.builder()
                 .tenantId(request.tenantId()).traceId(traceId).requestId(requestId)
                 .clientIp(request.clientIp()).inboundProtocol(protocol).model(model)
                 .messages(unified.getMessages()).tools(unified.getTools())
                 .systemPrompt(unified.getSystemPrompt()).parameters(unified.getExtraParams())
-                .stream(stream).agentIdentity(request.agentIdentity()).build();
+                .stream(stream).agentIdentity(request.agentIdentity())
+                .intent(request.intentHint()).build();
         RouteResult route = routePipeline.route(context);
         ApiKeyConfig selected = route.getSelectedKey();
         String upstreamProtocol = selected.getProtocol() != null ? selected.getProtocol() : "openai";
@@ -97,27 +85,82 @@ public class DefaultRouterCore implements RouterCore {
         Map<String, Object> upstreamBody = converter.buildUpstreamRequest(unified, upstreamProtocol);
         String path = "anthropic".equalsIgnoreCase(upstreamProtocol)
                 ? "/v1/messages" : "/v1/chat/completions";
-        return new PreparedRequest(protocol, model, traceId, requestId, route, path, upstreamBody);
+        int estimatedPromptTokens = com.miniapi.router.core.streaming.TokenCounter.estimate(
+                JsonUtils.toJson(upstreamBody.get("messages")));
+        return new RoutePlan(route, unified, upstreamProtocol, path, upstreamBody, protocol,
+                model, request.tenantId(), request.clientApiKey(), request.clientIp(),
+                traceId, requestId, stream, estimatedPromptTokens);
     }
 
-    private RouterResult failure(PreparedRequest prepared, ResponseConverter converter,
+    @Override
+    public RouterResult execute(RoutePlan plan) {
+        ResponseConverter converter = protocolRegistry.getResponseConverter(plan.inboundProtocol());
+        try {
+            StreamProxy.ProxyResult result = streamProxy.proxyNonStream(
+                    plan.routeResult(), plan.inboundProtocol(), plan.upstreamPath(),
+                    plan.upstreamBody(), plan.unified().getModel(), plan.requestId());
+            UnifiedResponse response = result.response();
+            UsageStats usage = usage(response, plan.unified().getModel(), result.mappedProvider(), result.fallbackCount());
+            return result(plan, converter.convert(response, plan.inboundProtocol()),
+                    result.mappedProvider(), result.apiKeyId(), usage, result.fallbackCount(),
+                    result.fallbackCount() > 0 ? "fallback" : "success", response.getContent(), null, null);
+        } catch (RouterException exception) {
+            return failure(plan, converter, exception.getErrorCode(), exception.getMessage());
+        } catch (Exception exception) {
+            return failure(plan, converter, "INTERNAL_ERROR", exception.getMessage());
+        }
+    }
+
+    @Override
+    public RouterResult executeStream(RoutePlan plan, OutputStream output) {
+        AtomicReference<String> terminalError = new AtomicReference<>();
+        StreamProxy.StreamContext stream = streamProxy.proxyStream(new StreamProxy.StreamProxyContext(
+                plan.routeResult(), plan.inboundProtocol(), plan.upstreamPath(), plan.upstreamBody(),
+                plan.unified().getModel(), plan.requestId(), plan.traceId(), null), output, terminalError::set);
+        return streamResult(plan, stream, terminalError);
+    }
+
+    @Override
+    public RouterResult executeStream(RoutePlan plan, StreamSink sink) {
+        AtomicReference<String> terminalError = new AtomicReference<>();
+        StreamProxy.StreamContext stream = streamProxy.proxyStreamSink(new StreamProxy.StreamProxyContext(
+                plan.routeResult(), plan.inboundProtocol(), plan.upstreamPath(), plan.upstreamBody(),
+                plan.unified().getModel(), plan.requestId(), plan.traceId(), null), sink, terminalError::set);
+        return streamResult(plan, stream, terminalError);
+    }
+
+    /* ---------- 内部辅助 ---------- */
+
+    private RouterResult streamResult(RoutePlan plan, StreamProxy.StreamContext stream,
+                                      AtomicReference<String> terminalError) {
+        String status = stream.apiKeyId() == null ? "failed"
+                : stream.clientDisconnected() ? "client_closed"
+                : stream.fallbackCount() > 0 ? "fallback" : "success";
+        return result(plan, null, stream.mappedProvider(), stream.apiKeyId(), stream.stats(),
+                stream.fallbackCount(), status, stream.content(),
+                stream.apiKeyId() == null ? "ALL_UPSTREAM_FAILED" : null,
+                stream.apiKeyId() == null
+                        ? valueOr(terminalError.get(), () -> "所有上游服务均不可用") : null);
+    }
+
+    private RouterResult failure(RoutePlan plan, ResponseConverter converter,
                                  String errorCode, String errorMessage) {
-        ApiKeyConfig selected = prepared.routeResult().getSelectedKey();
+        ApiKeyConfig selected = plan.routeResult().getSelectedKey();
         String clientMessage = SensitiveErrorSanitizer.sanitize(errorMessage);
-        return result(prepared, converter.convertError(errorCode, clientMessage, prepared.protocol()),
+        return result(plan, converter.convertError(errorCode, clientMessage, plan.inboundProtocol()),
                 selected != null ? selected.getProvider() : null, null, null, 0,
                 "failed", null, errorCode, errorMessage);
     }
 
-    private RouterResult result(PreparedRequest prepared, Map<String, Object> body,
+    private RouterResult result(RoutePlan plan, Map<String, Object> body,
                                 String provider, Long apiKeyId, UsageStats usage, int fallbackCount,
                                 String status, String responseContent,
                                 String errorCode, String errorMessage) {
-        RouteResult route = prepared.routeResult();
+        RouteResult route = plan.routeResult();
         Long ruleId = route.getMatchedRule() != null ? route.getMatchedRule().getId() : null;
-        return new RouterResult(body, prepared.traceId(), prepared.requestId(), prepared.protocol(),
-                prepared.model(), provider, apiKeyId, ruleId, route.getIntent(), usage,
-                fallbackCount, status, JsonUtils.toJson(prepared.upstreamBody().get("messages")),
+        return new RouterResult(body, plan.traceId(), plan.requestId(), plan.inboundProtocol(),
+                plan.requestedModel(), provider, apiKeyId, ruleId, route.getIntent(), usage,
+                fallbackCount, status, JsonUtils.toJson(plan.upstreamBody().get("messages")),
                 responseContent, errorCode, errorMessage);
     }
 
@@ -131,9 +174,4 @@ public class DefaultRouterCore implements RouterCore {
     private String valueOr(String value, java.util.function.Supplier<String> fallback) {
         return value == null || value.isBlank() ? fallback.get() : value;
     }
-
-    private record PreparedRequest(
-            String protocol, String model, String traceId, String requestId,
-            RouteResult routeResult, String upstreamPath, Map<String, Object> upstreamBody
-    ) {}
 }

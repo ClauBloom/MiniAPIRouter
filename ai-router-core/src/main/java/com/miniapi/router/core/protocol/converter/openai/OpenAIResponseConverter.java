@@ -43,11 +43,19 @@ public class OpenAIResponseConverter implements ResponseConverter {
         if (response.getContentBlocks() != null && !response.getContentBlocks().isEmpty()) {
             message.put("content", response.getContentBlocks());
         }
+        if (response.getToolCalls() != null && !response.getToolCalls().isEmpty()) {
+            message.put("tool_calls", response.getToolCalls());
+            message.put("content", response.getContent() != null ? response.getContent() : null);
+        }
 
         Map<String, Object> choice = new LinkedHashMap<>();
         choice.put("index", 0);
         choice.put("message", message);
-        choice.put("finish_reason", response.getFinishReason() != null ? response.getFinishReason() : "stop");
+        String finishReason = response.getFinishReason() != null ? response.getFinishReason() : "stop";
+        if (response.getToolCalls() != null && !response.getToolCalls().isEmpty() && "stop".equals(finishReason)) {
+            finishReason = "tool_calls";
+        }
+        choice.put("finish_reason", finishReason);
         result.put("choices", List.of(choice));
 
         Map<String, Object> usage = new LinkedHashMap<>();
@@ -71,6 +79,6 @@ public class OpenAIResponseConverter implements ResponseConverter {
 
     @Override
     public boolean supports(String protocol) {
-        return "openai".equalsIgnoreCase(protocol);
+        return "openai".equalsIgnoreCase(protocol) || "spring-ai".equalsIgnoreCase(protocol);
     }
 }

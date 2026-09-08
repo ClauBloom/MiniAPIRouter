@@ -176,8 +176,17 @@ public class RoutePipeline {
                 }
             }
 
-            /* 4b. 调用意图评估模型分析用户意图，获取意图权重 */
-            IntentWeightResult iwr = resolveIntentWeights(matched, candidates, ctx);
+            /* 4b. 调用意图评估模型分析用户意图，获取意图权重。
+             * 若调用方通过 RouteContext 显式给出意图提示（intentHint），跳过评估模型直接使用 */
+            IntentWeightResult iwr;
+            if (ctx.getIntent() != null && !ctx.getIntent().isBlank()) {
+                iwr = new IntentWeightResult();
+                iwr.intent = ctx.getIntent();
+                iwr.score = 100;
+                iwr.reasoning = "hinted by caller";
+            } else {
+                iwr = resolveIntentWeights(matched, candidates, ctx);
+            }
             if (iwr != null && iwr.intent != null) {
                 ctx.setIntent(iwr.intent);
                 IntentConfig ic = intentCatalogProvider.findByLabel(ctx.getTenantId(), iwr.intent);

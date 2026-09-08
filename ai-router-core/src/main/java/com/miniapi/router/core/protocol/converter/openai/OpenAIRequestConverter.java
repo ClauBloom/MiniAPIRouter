@@ -69,7 +69,7 @@ public class OpenAIRequestConverter implements RequestConverter {
 
     @Override
     public boolean supports(String protocol) {
-        return "openai".equalsIgnoreCase(protocol);
+        return "openai".equalsIgnoreCase(protocol) || "spring-ai".equalsIgnoreCase(protocol);
     }
 
     @Override
