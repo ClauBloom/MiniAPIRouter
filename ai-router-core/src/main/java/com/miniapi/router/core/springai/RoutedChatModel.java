@@ -57,6 +57,7 @@ public class RoutedChatModel implements ChatModel {
     private final ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate;
     private final RoutePlan pinnedPlan;
     private final RouterChatOptions defaultOptions;
+    private final com.miniapi.router.core.protocol.ProtocolRegistry protocolRegistry;
 
     RoutedChatModel(RouterCore routerCore,
                     SpringAiPromptConverter promptConverter,
@@ -65,7 +66,8 @@ public class RoutedChatModel implements ChatModel {
                     ToolCallingManager toolCallingManager,
                     ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate,
                     RoutePlan pinnedPlan,
-                    RouterChatOptions defaultOptions) {
+                    RouterChatOptions defaultOptions,
+                    com.miniapi.router.core.protocol.ProtocolRegistry protocolRegistry) {
         this.routerCore = routerCore;
         this.promptConverter = promptConverter;
         this.responseConverter = responseConverter;
@@ -74,6 +76,7 @@ public class RoutedChatModel implements ChatModel {
         this.toolExecutionEligibilityPredicate = toolExecutionEligibilityPredicate;
         this.pinnedPlan = pinnedPlan;
         this.defaultOptions = defaultOptions;
+        this.protocolRegistry = protocolRegistry;
     }
 
     /** 路由决策快照：可读出 intent / selectedModel / provider / fallbackChain 等 */
@@ -173,8 +176,16 @@ public class RoutedChatModel implements ChatModel {
         var unified = promptConverter.toUnifiedRequest(body);
         unified.setUpstreamProtocol(pinnedPlan.upstreamProtocol());
         unified.setInboundProtocol(SpringAiPromptConverter.PROTOCOL);
+        /* 按上游协议构建真实请求体（spring-ai/openai 入站 → anthropic 等上游的协议转换在此发生），
+         * 不能直接把 OpenAI wire body 发给非 OpenAI 上游（tools/messages/system 字段结构不同） */
+        Map<String, Object> upstreamBody = protocolRegistry
+                .getRequestConverter(pinnedPlan.upstreamProtocol())
+                .buildUpstreamRequest(unified, pinnedPlan.upstreamProtocol());
+        if (selectedModel != null && !selectedModel.isEmpty()) {
+            upstreamBody.put("model", selectedModel);
+        }
         return new RoutePlan(routeResult, unified, pinnedPlan.upstreamProtocol(), pinnedPlan.upstreamPath(),
-                body, SpringAiPromptConverter.PROTOCOL,
+                upstreamBody, SpringAiPromptConverter.PROTOCOL,
                 pinnedPlan.requestedModel(), options.getTenantId() != null ? options.getTenantId() : pinnedPlan.tenantId(),
                 options.getClientApiKey() != null ? options.getClientApiKey() : pinnedPlan.clientApiKey(),
                 pinnedPlan.clientIp(), pinnedPlan.traceId(), pinnedPlan.requestId(), stream,
@@ -220,9 +231,15 @@ public class RoutedChatModel implements ChatModel {
     private Map<String, Object> routingMeta(RoutePlan plan) {
         Map<String, Object> meta = new LinkedHashMap<>();
         RouteResult route = plan.routeResult();
-        meta.put(SpringAiResponseConverter.META_PREFIX + "intent", route.getIntent());
-        meta.put(SpringAiResponseConverter.META_PREFIX + "strategy", route.getStrategy());
-        meta.put(SpringAiResponseConverter.META_PREFIX + "model", route.getSelectedModel());
+        if (route.getIntent() != null) {
+            meta.put(SpringAiResponseConverter.META_PREFIX + "intent", route.getIntent());
+        }
+        if (route.getStrategy() != null) {
+            meta.put(SpringAiResponseConverter.META_PREFIX + "strategy", route.getStrategy());
+        }
+        if (route.getSelectedModel() != null) {
+            meta.put(SpringAiResponseConverter.META_PREFIX + "model", route.getSelectedModel());
+        }
         if (route.getSelectedKey() != null) {
             meta.put(SpringAiResponseConverter.META_PREFIX + "provider", route.getSelectedKey().getProvider());
             meta.put(SpringAiResponseConverter.META_PREFIX + "apiKeyId", route.getSelectedKey().getId());

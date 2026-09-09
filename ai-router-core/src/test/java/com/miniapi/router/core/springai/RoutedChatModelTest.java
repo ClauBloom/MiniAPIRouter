@@ -165,7 +165,11 @@ class RoutedChatModelTest {
     private RoutedChatModel newModel(RoutePlan plan, org.springframework.ai.model.tool.ToolCallingManager manager) {
         return new RoutedChatModel(routerCore, promptConverter, responseConverter, streamConverter,
                 manager, new org.springframework.ai.model.tool.DefaultToolExecutionEligibilityPredicate(),
-                plan, null);
+                plan, null, new com.miniapi.router.core.protocol.ProtocolRegistry(
+                        List.of(new com.miniapi.router.core.protocol.converter.openai.OpenAIRequestConverter(
+                                new com.miniapi.router.core.protocol.ReasoningContentCache())),
+                        List.of(new com.miniapi.router.core.protocol.converter.openai.OpenAIResponseConverter()),
+                        List.of(new com.miniapi.router.core.protocol.converter.openai.OpenAIStreamConverter())));
     }
 
     private static RouterResult result(Map<String, Object> body) {

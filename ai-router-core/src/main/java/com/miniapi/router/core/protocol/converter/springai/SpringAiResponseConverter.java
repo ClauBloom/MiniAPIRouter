@@ -118,8 +118,17 @@ public class SpringAiResponseConverter {
                 .id(id)
                 .model(model)
                 .usage(usage);
-        if (routingMeta != null) {
-            builder.metadata(routingMeta);
+        if (routingMeta != null && !routingMeta.isEmpty()) {
+            /* ChatResponseMetadata 内部使用 ConcurrentHashMap，不接受 null value；过滤掉可空的元数据项 */
+            Map<String, Object> safe = new LinkedHashMap<>();
+            routingMeta.forEach((key, value) -> {
+                if (value != null) {
+                    safe.put(key, value);
+                }
+            });
+            if (!safe.isEmpty()) {
+                builder.metadata(safe);
+            }
         }
         return builder.build();
     }

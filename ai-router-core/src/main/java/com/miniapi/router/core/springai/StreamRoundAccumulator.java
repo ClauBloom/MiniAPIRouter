@@ -98,6 +98,11 @@ class StreamRoundAccumulator {
         Map<String, Object> props = new java.util.LinkedHashMap<>();
         props.put("role", "assistant");
         props.put("index", 0);
+        /* 聚合推理内容透传（此前 reasoning 字段已累积但从未输出） */
+        String aggregatedReasoning = reasoning.toString();
+        if (!aggregatedReasoning.isEmpty()) {
+            props.put("reasoningContent", aggregatedReasoning);
+        }
         AssistantMessage assistantMessage = AssistantMessage.builder()
                 .content(content.toString())
                 .properties(props)

@@ -104,7 +104,24 @@ public class RouterChatOptions implements ToolCallingChatOptions {
         if (runtime.getPresencePenalty() != null) merged.setPresencePenalty(runtime.getPresencePenalty());
         if (runtime.getStopSequences() != null) merged.setStopSequences(new ArrayList<>(runtime.getStopSequences()));
         if (runtime.getInternalToolExecutionEnabled() != null) merged.setInternalToolExecutionEnabled(runtime.getInternalToolExecutionEnabled());
-        List<ToolCallback> callbacks = new ArrayList<>(merged.getToolCallbacks()); callbacks.addAll(runtime.getToolCallbacks()); merged.setToolCallbacks(callbacks);
+        /* 合并工具回调（按工具名去重）：runtime 与 defaults 可能为同一实例（route(prompt) 直接回传
+         * prompt 选项），不做去重会导致工具被重复声明，上游报 "Tool names must be unique" */
+        List<ToolCallback> callbacks = new ArrayList<>(merged.getToolCallbacks());
+        if (runtime != defaults) {
+            callbacks.addAll(runtime.getToolCallbacks());
+        }
+        java.util.LinkedHashMap<String, ToolCallback> byName = new java.util.LinkedHashMap<>();
+        for (ToolCallback callback : callbacks) {
+            String name;
+            try {
+                name = callback.getToolDefinition() != null ? callback.getToolDefinition().name()
+                        : String.valueOf(System.identityHashCode(callback));
+            } catch (RuntimeException exception) {
+                name = String.valueOf(System.identityHashCode(callback));
+            }
+            byName.putIfAbsent(name, callback);
+        }
+        merged.setToolCallbacks(new ArrayList<>(byName.values()));
         Set<String> names = new HashSet<>(merged.getToolNames()); names.addAll(runtime.getToolNames()); merged.setToolNames(names);
         Map<String, Object> context = new LinkedHashMap<>(merged.getToolContext()); context.putAll(runtime.getToolContext()); merged.setToolContext(context);
         if (runtime instanceof RouterChatOptions r) {

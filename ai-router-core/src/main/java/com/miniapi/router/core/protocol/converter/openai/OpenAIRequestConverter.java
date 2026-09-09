@@ -85,7 +85,13 @@ public class OpenAIRequestConverter implements RequestConverter {
             body.put("max_tokens", request.getMaxTokens());
         }
         if (request.getTopP() != null) body.put("top_p", request.getTopP());
-        if (request.getTools() != null) body.put("tools", request.getTools());
+        if (request.getTools() != null && !request.getTools().isEmpty()) {
+            if ("anthropic".equalsIgnoreCase(upstreamProtocol)) {
+                body.put("tools", toAnthropicTools(request.getTools()));
+            } else {
+                body.put("tools", request.getTools());
+            }
+        }
         body.put("stream", Boolean.TRUE.equals(request.getStream()));
         // 合并额外参数（客户端可传 thinking 等参数），但排除已显式处理的字段防止意外覆盖
         if (request.getExtraParams() != null) {
@@ -98,6 +104,35 @@ public class OpenAIRequestConverter implements RequestConverter {
         // 避免 DeepSeek 等推理模型报错 "reasoning_content must be passed back"
         disableThinkingIfReasoningIncomplete(body);
         return body;
+    }
+
+    /**
+     * OpenAI function 工具 → Anthropic tools 顶层结构（name/description/input_schema）。
+     * Anthropic 不接受 {"type":"function","function":{...}} 包装，直接透传会报
+     * "unknown variant `function`" 400 错误。
+     */
+    private List<Map<String, Object>> toAnthropicTools(List<Map<String, Object>> openAiTools) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> tool : openAiTools) {
+            if (tool == null || !"function".equals(tool.get("type"))) {
+                result.add(tool);
+                continue;
+            }
+            if (!(tool.get("function") instanceof Map<?, ?> fn)) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> function = (Map<String, Object>) fn;
+            Map<String, Object> anthropicTool = new LinkedHashMap<>();
+            anthropicTool.put("name", function.get("name"));
+            if (function.get("description") != null) {
+                anthropicTool.put("description", function.get("description"));
+            }
+            Object parameters = function.get("parameters");
+            anthropicTool.put("input_schema", parameters != null ? parameters : Map.of("type", "object"));
+            result.add(anthropicTool);
+        }
+        return result;
     }
 
     /**

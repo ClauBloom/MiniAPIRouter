@@ -40,6 +40,10 @@ public class SpringAiStreamConverter {
         Map<String, Object> props = new LinkedHashMap<>();
         props.put("role", "assistant");
         props.put("index", chunk.getIndex());
+        /* 增量推理内容透传：对齐 DeepSeek 模块的 metadata 约定，供宿主（如 BloomHarness）渲染思考流 */
+        if (chunk.getReasoningContent() != null && !chunk.getReasoningContent().isEmpty()) {
+            props.put("reasoningContent", chunk.getReasoningContent());
+        }
         AssistantMessage assistantMessage = AssistantMessage.builder()
                 .content(chunk.getDeltaContent())
                 .properties(props)

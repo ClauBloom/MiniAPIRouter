@@ -39,16 +39,20 @@ public class DefaultChatModelRouter implements ChatModelRouter {
     private final ToolCallingManager toolCallingManager;
     private final ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate;
 
+    private final com.miniapi.router.core.protocol.ProtocolRegistry protocolRegistry;
+
     public DefaultChatModelRouter(RouterCore routerCore,
                                   SpringAiPromptConverter promptConverter,
                                   SpringAiResponseConverter responseConverter,
                                   SpringAiStreamConverter streamConverter,
+                                  com.miniapi.router.core.protocol.ProtocolRegistry protocolRegistry,
                                   ObjectProvider<ToolCallingManager> toolCallingManagerProvider,
                                   ObjectProvider<ToolExecutionEligibilityPredicate> predicateProvider) {
         this.routerCore = routerCore;
         this.promptConverter = promptConverter;
         this.responseConverter = responseConverter;
         this.streamConverter = streamConverter;
+        this.protocolRegistry = protocolRegistry;
         this.toolCallingManager = toolCallingManagerProvider.getIfAvailable(
                 () -> DefaultToolCallingManager.builder().build());
         this.toolExecutionEligibilityPredicate = predicateProvider.getIfAvailable(
@@ -75,7 +79,7 @@ public class DefaultChatModelRouter implements ChatModelRouter {
                 options.getIntentHint());
         RoutePlan plan = routerCore.plan(request);
         return new RoutedChatModel(routerCore, promptConverter, responseConverter, streamConverter,
-                toolCallingManager, toolExecutionEligibilityPredicate, plan, options);
+                toolCallingManager, toolExecutionEligibilityPredicate, plan, options, protocolRegistry);
     }
 
     @Override

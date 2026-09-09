@@ -69,7 +69,8 @@ public class ChatResponseStreamSink implements StreamSink {
     public void onError(String errorCode, String message, String traceId) {
         if (terminated) return;
         terminated = true;
-        fluxSink.error(new IllegalStateException("MiniAPIRouter stream error [" + errorCode + "]: " + message));
+        /* 抛出携带错误码的 RouterException（而非 IllegalStateException），便于宿主按 errorCode 映射业务错误 */
+        fluxSink.error(new com.miniapi.router.core.exception.RouterException(errorCode, message, 502));
     }
 
     @Override

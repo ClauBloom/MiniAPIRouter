@@ -29,8 +29,8 @@ MiniAPIRouter 是一个轻量级的 AI API 智能路由网关。它位于客户�
 
 从 [Releases](https://github.com/ClauBloom/MiniAPIRouter/releases) 页面下载对应系统的压缩包：
 
-- **Windows 用户**：下载 `MiniAPIRouter-v1.0.3-windows-windows-x86_64.zip`
-- **其他系统**：下载 `MiniAPIRouter-v1.0.3-universal.jar`（需要自行安装 Java 21）
+- **Windows 用户**：下载 `MiniAPIRouter-v1.1.0-windows-windows-x86_64.zip`
+- **其他系统**：下载 `MiniAPIRouter-v1.1.0-universal.jar`（需要自行安装 Java 21）
 
 Windows 用户解压到你喜欢的文件夹即可。
 
@@ -41,7 +41,7 @@ Windows 用户解压到你喜欢的文件夹即可。
 **JAR 版**：打开终端（命令提示符），进入 JAR 文件所在目录，运行：
 
 ```bash
-java -jar MiniAPIRouter-v1.0.3-universal.jar
+java -jar MiniAPIRouter-v1.1.0-universal.jar
 ```
 
 ### 3. 初次配置
