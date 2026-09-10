@@ -195,6 +195,8 @@ public class StreamProxy {
             ApiKeyConfig key = target.key();
             ctx.upstreamBody().put("model", target.realName());
             BufferedReader reader = null;
+            boolean sawToolCallDelta = false;   // 本次上游是否产出过工具调用增量
+            boolean visibleOutputSent = false;  // 本次上游是否向下游发送过可见内容（文本/推理/工具调用）
             try {
                 reader = upstreamClient.stream(key, ctx.upstreamPath(), ctx.upstreamBody());
                 String line;
@@ -219,9 +221,15 @@ public class StreamProxy {
                         if (chunk.getDeltaContent() != null) {
                             accumulated.append(chunk.getDeltaContent());
                             completionTokens += TokenCounter.estimate(chunk.getDeltaContent());
+                            visibleOutputSent = true;
                         }
                         if (chunk.getReasoningContent() != null) {
                             accumulatedReasoning.append(chunk.getReasoningContent());
+                            visibleOutputSent = true;
+                        }
+                        if (chunk.getToolCalls() != null && !chunk.getToolCalls().isEmpty()) {
+                            sawToolCallDelta = true;
+                            visibleOutputSent = true;
                         }
                         // 收集上游返回的真实 usage（优于估算值）
                         if (chunk.getUpstreamUsage() != null) {
@@ -238,6 +246,16 @@ public class StreamProxy {
                             break;
                         }
                     }
+                }
+                /* 流正常读尽但零产出（无文本/无推理/无工具调用）：
+                 * 典型如上游对 tool 结果上下文返回 HTTP 200 空流后直接关连接；
+                 * 也包括仅回传 usage（completion=0）就结束的空响应。
+                 * 若视为成功，下游会收到一条"状态正常但内容为空"的消息，
+                 * 上层智能体循环会把它误判为任务完成而静默终止。 */
+                if (accumulated.length() == 0 && accumulatedReasoning.length() == 0
+                        && !sawToolCallDelta) {
+                    throw new UpstreamException("Upstream " + key.getProvider()
+                            + " returned an empty stream (HTTP 200, no content/tool calls)", 502);
                 }
                 /* 缓存推理内容供后续使用 */
                 reasoningCache.store(accumulated.toString(), accumulatedReasoning.toString());
@@ -282,14 +300,16 @@ public class StreamProxy {
                         break;
                     }
                     if (outcome == StreamSink.FallbackOutcome.NO_SIGNAL) {
-                        /* 静默回退：尚未发送内容，可安全切换到下一个 Key */
-                        if (firstChunk) {
-                            log.info("[StreamProxy] Silent fallback from {} to {} (no content sent yet)",
+                        /* 静默回退：尚未发送过可见内容（文本/推理/工具调用）时可安全切换到下一个 Key。
+                         * 注意不能用 firstChunk 判断——仅角色占位 chunk 也会置其为 false，但那对下游不可见 */
+                        if (!visibleOutputSent) {
+                            log.info("[StreamProxy] Silent fallback from {} to {} (no visible content sent yet)",
                                     key.getProvider(), nextKey.getProvider());
                             accumulated.setLength(0);
                             accumulatedReasoning.setLength(0);
                             completionTokens = 0;
                             ttft = 0;
+                            upstreamUsageFromChunks = null;
                         } else {
                             /* 已发送内容，无法静默回退，发送中断错误 */
                             log.warn("[StreamProxy] Cannot fallback in {} protocol (content already sent), stopping",
